@@ -80,27 +80,76 @@ const scenarios = {
       { time: '00:18', title: 'Release blocked', detail: 'Breaking-change policy produced a deterministic verdict.', tone: 'danger' },
     ],
   },
+  sideeffect: {
+    id: 'sideeffect',
+    eyebrow: 'Undeclared behaviour',
+    title: 'Change did more than it said',
+    summary: 'Candidate applies the declared tax — and an undeclared 15% discount.',
+    file: 'src/pricing.py',
+    additions: '+2',
+    removals: '−1',
+    stable: { name: 'pricing-api-00071', tag: 'stable', commit: 'b41d7e2', traffic: '100%' },
+    candidate: { name: 'pricing-api-00072', tag: 'candidate', commit: 'f920ac5', traffic: '0%' },
+    hypothesis:
+      'The response keeps its exact shape, so the risk is not malformedness — it is behaviour the change never declared.',
+    experiment: 'Intent reconciliation on the paired response',
+    experimentKey: 'adjudication',
+    apiPayload: {
+      service_name: 'pricing-api',
+      summary: 'Apply 18% GST to the quote total',
+      diff: '-    total = subtotal\n+    tax_rate = 0.18\n+    total = subtotal * (1 + tax_rate)',
+      scenario_id: 'undeclared-side-effect',
+      request_path: '/api/v1/quote',
+    },
+    budget: '6 paired requests · 20 seconds',
+    threshold: 'Block on any observed behaviour the change does not account for',
+    smokeMiss:
+      'Every field, type and status code is unchanged and latency is flat, so availability, smoke, contract and latency checks all pass.',
+    verdict: 'BLOCK',
+    confidence: 94,
+    metrics: [
+      { label: 'Response shape', stable: '6 fields', candidate: '6 fields', delta: 'Identical', bad: false },
+      { label: 'p95 latency', stable: '70 ms', candidate: '71 ms', delta: '+1%', bad: false },
+      { label: 'Unexplained deltas', stable: '—', candidate: '1', delta: 'discount_applied', bad: true },
+    ],
+    evidence: [
+      { time: '00:00', title: 'Baseline smoke passed', detail: 'Both revisions returned HTTP 200 with identical field names and types.', tone: 'neutral' },
+      { time: '00:04', title: 'Deterministic delta extraction', detail: 'Five field-level differences measured between the paired responses.', tone: 'neutral' },
+      { time: '00:07', title: 'Gemini reconciled intent', detail: 'total and tax_rate traced to the diff; quote_id and issued_at ruled non-deterministic.', tone: 'ai' },
+      { time: '00:11', title: 'Undeclared behaviour found', detail: 'discount_applied moved 0.0 → 0.15 with no supporting diff evidence.', tone: 'danger' },
+      { time: '00:13', title: 'Release blocked', detail: 'Fixed policy: unexplained behavioural change blocks. Gemini classified; it did not decide.', tone: 'danger' },
+    ],
+  },
 };
 
 const liveTargetsEnabled = import.meta.env.VITE_USE_LIVE_TARGETS === 'true';
 
 // Compose uses service hostnames; Cloud Run injects public revision URLs at build time.
 const TARGET_URLS = {
-  stableLatency: import.meta.env.VITE_STABLE_LATENCY_URL || 'http://stable-latency:8080',
-  candidateLatency: import.meta.env.VITE_CANDIDATE_LATENCY_URL || 'http://candidate-latency:8080',
-  stableContract: import.meta.env.VITE_STABLE_CONTRACT_URL || 'http://stable-contract:8080',
-  candidateContract: import.meta.env.VITE_CANDIDATE_CONTRACT_URL || 'http://candidate-contract:8080',
+  concurrency: {
+    stable: import.meta.env.VITE_STABLE_LATENCY_URL || 'http://stable-latency:8080',
+    candidate: import.meta.env.VITE_CANDIDATE_LATENCY_URL || 'http://candidate-latency:8080',
+  },
+  contract: {
+    stable: import.meta.env.VITE_STABLE_CONTRACT_URL || 'http://stable-contract:8080',
+    candidate: import.meta.env.VITE_CANDIDATE_CONTRACT_URL || 'http://candidate-contract:8080',
+  },
+  sideeffect: {
+    stable: import.meta.env.VITE_STABLE_SIDEEFFECT_URL || 'http://stable-sideeffect:8080',
+    candidate: import.meta.env.VITE_CANDIDATE_SIDEEFFECT_URL || 'http://candidate-sideeffect:8080',
+  },
 };
 
 function analysisPayload(scenario) {
   if (!liveTargetsEnabled) return scenario.apiPayload;
-  const contract = scenario.id === 'contract';
+  const targets = TARGET_URLS[scenario.id];
+  if (!targets) return scenario.apiPayload;
   return {
     ...scenario.apiPayload,
     scenario_id: undefined,
     request_path: '/api/v1/quote',
-    stable_url: contract ? TARGET_URLS.stableContract : TARGET_URLS.stableLatency,
-    candidate_url: contract ? TARGET_URLS.candidateContract : TARGET_URLS.candidateLatency,
+    stable_url: targets.stable,
+    candidate_url: targets.candidate,
   };
 }
 

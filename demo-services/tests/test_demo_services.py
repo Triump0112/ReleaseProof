@@ -16,7 +16,7 @@ async def _client(role: str, scenario: str) -> httpx.AsyncClient:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("role", ["stable", "candidate"])
-@pytest.mark.parametrize("scenario", ["latency", "contract"])
+@pytest.mark.parametrize("scenario", ["latency", "contract", "sideeffect"])
 async def test_all_revisions_pass_health(role: str, scenario: str) -> None:
     async with await _client(role, scenario) as client:
         response = await client.get("/health")
@@ -69,6 +69,52 @@ async def test_candidate_has_repeatable_concurrent_latency_regression() -> None:
     # semaphore-limited waves (~720 ms). The broad threshold avoids CI jitter.
     assert candidate_elapsed > stable_elapsed * 5
     assert candidate_elapsed > 0.60
+
+
+@pytest.mark.asyncio
+async def test_side_effect_candidate_keeps_identical_response_shape() -> None:
+    """The regression must be invisible to every shape-based check."""
+    payload = {"quantity": 1, "unit_price": 499, "currency": "inr"}
+    async with await _client("stable", "sideeffect") as stable:
+        stable_body = (await stable.post("/api/v1/quote", json=payload)).json()
+    async with await _client("candidate", "sideeffect") as candidate:
+        candidate_body = (await candidate.post("/api/v1/quote", json=payload)).json()
+
+    # Same field names, same types, nothing removed: contract checks pass.
+    assert stable_body.keys() == candidate_body.keys()
+    assert {key: type(value) for key, value in stable_body.items()} == {
+        key: type(value) for key, value in candidate_body.items()
+    }
+
+
+@pytest.mark.asyncio
+async def test_side_effect_candidate_applies_undeclared_discount() -> None:
+    payload = {"quantity": 1, "unit_price": 499, "currency": "inr"}
+    async with await _client("stable", "sideeffect") as stable:
+        stable_body = (await stable.post("/api/v1/quote", json=payload)).json()
+    async with await _client("candidate", "sideeffect") as candidate:
+        candidate_body = (await candidate.post("/api/v1/quote", json=payload)).json()
+
+    # Declared: 18% GST. Undeclared: a 15% discount nothing in the diff mentions.
+    assert stable_body["tax_rate"] == 0.0
+    assert candidate_body["tax_rate"] == 0.18
+    assert stable_body["discount_applied"] == 0.0
+    assert candidate_body["discount_applied"] == 0.15
+    assert candidate_body["total"] == round(499 * 1.18 * 0.85, 2)
+
+    # The net total still looks plausible, which is why review misses it.
+    assert abs(candidate_body["total"] - stable_body["total"]) < 2.0
+
+
+@pytest.mark.asyncio
+async def test_side_effect_identifiers_vary_on_every_call() -> None:
+    """Both revisions emit genuine noise, so the adjudicator must tolerate it."""
+    async with await _client("stable", "sideeffect") as stable:
+        first = (await stable.get("/api/v1/quote")).json()
+        second = (await stable.get("/api/v1/quote")).json()
+
+    assert first["quote_id"] != second["quote_id"]
+    assert first["total"] == second["total"]
 
 
 def test_rejects_invalid_configuration() -> None:

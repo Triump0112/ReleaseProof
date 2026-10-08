@@ -100,6 +100,39 @@ def analyze(payload: dict[str, object], expected_experiment: str) -> None:
     )
 
 
+def analyze_side_effect(payload: dict[str, object]) -> None:
+    """Assert the gate blocks on behaviour the change never declared.
+
+    Every conventional signal here is clean, so this also guards against the
+    adjudicator being bypassed: the smoke experiment must be what fails, and it
+    must fail on the undeclared field rather than on shape or latency.
+    """
+    response = httpx.post(f"http://{HOST}:{API_PORT}/api/analyze", json=payload, timeout=45)
+    response.raise_for_status()
+    record = response.json()
+    assert record["status"] == "COMPLETE", record
+    ledger = record["ledger"]
+    assert ledger["verdict"] == "BLOCK", ledger
+
+    smoke = next(item for item in ledger["evidence"] if item["experiment_id"] == "api_smoke")
+    adjudication = smoke["adjudication"]
+    assert adjudication is not None, smoke
+    assert adjudication["passed"] is False, adjudication
+    assert adjudication["unexplained_paths"] == ["discount_applied"], adjudication
+
+    labels = {item["path"]: item["label"] for item in adjudication["classifications"]}
+    assert labels["total"] == "explained", labels
+    assert labels["tax_rate"] == "explained", labels
+    # Non-determinism present on both revisions must not be mistaken for a regression.
+    assert labels["quote_id"] == "benign_noise", labels
+    assert labels["issued_at"] == "benign_noise", labels
+
+    health = next(item for item in ledger["evidence"] if item["experiment_id"] == "health_check")
+    assert health["passed"] is True, health
+
+    print(f"intent_reconciliation: {ledger['verdict']} - {smoke['explanation']}")
+
+
 def main() -> None:
     api = start(
         BACKEND,
@@ -147,6 +180,26 @@ def main() -> None:
                 },
             },
             "contract_compatibility",
+        )
+        for process in contract_pair:
+            stop(process)
+            processes.remove(process)
+
+        side_effect_pair = start_pair("sideeffect")
+        processes.extend(side_effect_pair)
+        analyze_side_effect(
+            {
+                "service_name": "pricing-api",
+                "summary": "Apply 18% GST to the quote total",
+                "diff": (
+                    "-    total = subtotal\n"
+                    "+    tax_rate = 0.18\n"
+                    "+    total = subtotal * (1 + tax_rate)"
+                ),
+                "stable_url": f"http://{HOST}:{STABLE_PORT}",
+                "candidate_url": f"http://{HOST}:{CANDIDATE_PORT}",
+                "request_path": "/api/v1/quote",
+            }
         )
         print("Live paired-service verification passed.")
     finally:

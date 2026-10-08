@@ -21,6 +21,10 @@ services:
         condition: service_healthy
       candidate-contract:
         condition: service_healthy
+      stable-sideeffect:
+        condition: service_healthy
+      candidate-sideeffect:
+        condition: service_healthy
 
   frontend:
     build:
@@ -72,6 +76,24 @@ services:
       SCENARIO: contract
     ports:
       - "8202:8080"
+    healthcheck: *demo-health
+
+  stable-sideeffect:
+    build: ./demo-services
+    environment:
+      ROLE: stable
+      SCENARIO: sideeffect
+    ports:
+      - "8301:8080"
+    healthcheck: *demo-health
+
+  candidate-sideeffect:
+    build: ./demo-services
+    environment:
+      ROLE: candidate
+      SCENARIO: sideeffect
+    ports:
+      - "8302:8080"
     healthcheck: *demo-health
 
 volumes:

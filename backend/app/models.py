@@ -103,6 +103,45 @@ class SideMeasurement(BaseModel):
     notes: list[str] = Field(default_factory=list)
 
 
+class DeltaLabel(str, Enum):
+    """How a measured stable-versus-candidate difference relates to the change."""
+
+    EXPLAINED = "explained"
+    BENIGN_NOISE = "benign_noise"
+    UNEXPLAINED = "unexplained"
+
+
+class ResponseDelta(BaseModel):
+    """One field-level difference, derived deterministically from measurements."""
+
+    path: str = Field(max_length=300)
+    kind: Literal["field_added", "field_removed", "type_changed", "value_changed"]
+    stable_value: str | None = Field(default=None, max_length=200)
+    candidate_value: str | None = Field(default=None, max_length=200)
+    stable_type: str | None = None
+    candidate_type: str | None = None
+
+
+class DeltaClassification(BaseModel):
+    path: str = Field(max_length=300)
+    label: DeltaLabel
+    rationale: str = Field(min_length=1, max_length=500)
+    # Required for 'explained'; a claim without a citation is downgraded.
+    diff_evidence: str | None = Field(default=None, max_length=500)
+
+
+class Adjudication(BaseModel):
+    """Reconciliation of observed behaviour against the change's declared intent."""
+
+    deltas: list[ResponseDelta] = Field(default_factory=list)
+    classifications: list[DeltaClassification] = Field(default_factory=list)
+    unexplained_paths: list[str] = Field(default_factory=list)
+    passed: bool
+    summary: str
+    classifier: str
+    classifier_note: str | None = Field(default=None, max_length=1000)
+
+
 class ExperimentEvidence(BaseModel):
     experiment_id: ExperimentId
     title: str
@@ -112,6 +151,7 @@ class ExperimentEvidence(BaseModel):
     passed: bool | None
     explanation: str
     thresholds: dict[str, float | int | str] = Field(default_factory=dict)
+    adjudication: Adjudication | None = None
 
 
 class EvidenceLedger(BaseModel):

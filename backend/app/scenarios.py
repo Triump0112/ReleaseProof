@@ -66,6 +66,65 @@ SCENARIO_PROFILES: dict[str, dict[str, Any]] = {
             },
         },
     },
+    "undeclared-side-effect": {
+        "summary": ScenarioSummary(
+            id="undeclared-side-effect",
+            title="Undeclared side effect",
+            description=(
+                "The candidate implements the declared tax change correctly and also applies "
+                "an undeclared discount. Shape, types, status and latency are all unchanged."
+            ),
+            suggested_change=ChangeInput(
+                service_name="pricing-api",
+                summary="Apply 18% GST to the quote total",
+                diff=(
+                    "-    total = subtotal\n"
+                    "+    tax_rate = 0.18\n"
+                    "+    total = subtotal * (1 + tax_rate)"
+                ),
+                scenario_id="undeclared-side-effect",
+                request_path="/api/v1/quote",
+                budget=Budget(),
+            ),
+        ),
+        "results": {
+            "health_check": {
+                "stable": {"status": 200, "latencies": [38, 40, 39], "errors": 0, "body": {"status": "ok"}},
+                "candidate": {"status": 200, "latencies": [39, 41, 40], "errors": 0, "body": {"status": "ok"}},
+            },
+            # Identical shape, identical types, no removed fields, comparable
+            # latency. Every conventional check passes; only reconciling the
+            # observed deltas against the declared change finds the discount.
+            "api_smoke": {
+                "stable": {
+                    "status": 200,
+                    "latencies": [68, 71, 70],
+                    "errors": 0,
+                    "body": {
+                        "total": 499.0,
+                        "currency": "INR",
+                        "tax_rate": 0.0,
+                        "discount_applied": 0.0,
+                        "quote_id": "7f3a9c21d4b8",
+                        "issued_at": "2026-10-08T09:14:02+00:00",
+                    },
+                },
+                "candidate": {
+                    "status": 200,
+                    "latencies": [69, 72, 71],
+                    "errors": 0,
+                    "body": {
+                        "total": 500.5,
+                        "currency": "INR",
+                        "tax_rate": 0.18,
+                        "discount_applied": 0.15,
+                        "quote_id": "c08e55a1b7f2",
+                        "issued_at": "2026-10-08T09:14:05+00:00",
+                    },
+                },
+            },
+        },
+    },
     "healthy-release": {
         "summary": ScenarioSummary(
             id="healthy-release",

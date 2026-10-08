@@ -10,13 +10,15 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+from datetime import datetime, timezone
 from typing import Literal
+from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 Role = Literal["stable", "candidate"]
-Scenario = Literal["latency", "contract"]
+Scenario = Literal["latency", "contract", "sideeffect"]
 
 
 class QuoteRequest(BaseModel):
@@ -51,7 +53,7 @@ def create_app(
     configured_scenario: Scenario = _validated_setting(
         "SCENARIO",
         scenario or os.getenv("SCENARIO", "latency"),
-        {"latency", "contract"},
+        {"latency", "contract", "sideeffect"},
     )  # type: ignore[assignment]
 
     application = FastAPI(
@@ -103,6 +105,33 @@ def create_app(
                     "currency": payload.currency.upper(),
                 }
             return {"total": total, "currency": payload.currency.upper()}
+
+        if configured_scenario == "sideeffect":
+            # The hardest class of regression. The response keeps its exact
+            # shape and types, stays HTTP 200, and stays fast, so availability,
+            # smoke, contract and latency checks all pass.
+            #
+            # The declared change is "apply 18% GST to the quote total", and the
+            # candidate does that. It also applies an undeclared 15% discount
+            # that no part of the diff mentions. Because GST raises the total
+            # and the discount lowers it, the resulting total still looks about
+            # right to a human reviewer; only `discount_applied` reveals the
+            # undeclared behaviour.
+            await asyncio.sleep(0.01)
+            if configured_role == "candidate":
+                tax_rate, discount = 0.18, 0.15
+            else:
+                tax_rate, discount = 0.0, 0.0
+            return {
+                "total": round(total * (1 + tax_rate) * (1 - discount), 2),
+                "currency": payload.currency.upper(),
+                "tax_rate": tax_rate,
+                "discount_applied": discount,
+                # Genuinely non-deterministic on every request from both roles.
+                # A naive differ flags these; the adjudicator must not.
+                "quote_id": uuid4().hex,
+                "issued_at": datetime.now(timezone.utc).isoformat(),
+            }
 
         # The setting validator makes this unreachable, but keeping an explicit
         # failure is safer if more scenarios are added later.

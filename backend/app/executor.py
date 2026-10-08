@@ -11,6 +11,7 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 
+from .adjudicator import adjudicate
 from .catalog import CATALOG
 from .models import (
     ChangeInput,
@@ -256,6 +257,21 @@ async def execute_plan(change: ChangeInput, plan: ExperimentPlan) -> list[Experi
             )
         total_requests += estimated
         passed, explanation, thresholds = _evaluate(experiment_id, stable, candidate, change)
+
+        # Intent reconciliation runs on the representative request path, as part
+        # of the mandatory baseline rather than the adaptive plan — so every
+        # release is checked for effects its change never declared, even when
+        # the planner selects nothing.
+        adjudication = None
+        if experiment_id == ExperimentId.SMOKE and passed is not None:
+            adjudication = await asyncio.to_thread(
+                adjudicate, change, stable.response_sample, candidate.response_sample
+            )
+            if not adjudication.passed:
+                passed = False
+                explanation = adjudication.summary
+                thresholds = {**thresholds, "policy": "every observed change must be explained by the diff"}
+
         evidence.append(ExperimentEvidence(
             experiment_id=experiment_id,
             title=definition.title,
@@ -265,6 +281,7 @@ async def execute_plan(change: ChangeInput, plan: ExperimentPlan) -> list[Experi
             passed=passed,
             explanation=explanation,
             thresholds=thresholds,
+            adjudication=adjudication,
         ))
     return evidence
 
