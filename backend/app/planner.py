@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
+
+from pydantic import BaseModel, Field
 
 from .catalog import ADAPTIVE_IDS, BASELINE_IDS
 from .models import (
@@ -13,6 +16,146 @@ from .models import (
     ExperimentPlan,
     PlannedExperiment,
 )
+
+
+# ---------------------------------------------------------------------------
+# Response schema for the model.
+#
+# Deliberately NOT ExperimentPlan. That model carries fields the server owns —
+# which planner ran, the mandatory baselines, the analysis mode — and enforces
+# cross-field rules that JSON Schema cannot express, so the model could not
+# satisfy them even in principle. Asking it to populate them produced responses
+# that failed validation and silently demoted every run to the fallback.
+#
+# Every field here is a plain string or list of strings. Anything the model gets
+# wrong is then repaired below rather than discarded, because losing a usable
+# plan to one malformed field is worse than correcting it.
+# ---------------------------------------------------------------------------
+
+
+class _PlannedExperimentResponse(BaseModel):
+    experiment_id: str = ""
+    reason: str = ""
+    hypothesis: str = ""
+
+
+class _ExplorerSpecResponse(BaseModel):
+    name: str = ""
+    rationale: str = ""
+    hypothesis: str = ""
+    query_parameters: dict[str, str] = Field(default_factory=dict)
+    assertions: list[str] = Field(default_factory=list)
+    required_response_paths: list[str] = Field(default_factory=list)
+    compare_response_paths: list[str] = Field(default_factory=list)
+
+
+class _PlannerResponse(BaseModel):
+    detected_change: str = ""
+    risk_summary: str = ""
+    adaptive_experiments: list[_PlannedExperimentResponse] = Field(default_factory=list)
+    exploratory_experiments: list[_ExplorerSpecResponse] = Field(default_factory=list)
+
+
+def _clamp(text: str, limit: int, fallback: str) -> str:
+    cleaned = (text or "").strip()
+    if len(cleaned) < 3:
+        return fallback
+    return cleaned[:limit]
+
+
+def _slug(name: str) -> str:
+    """Coerce a model-authored name into the DSL's required shape."""
+    slug = re.sub(r"[^a-z0-9_-]+", "-", (name or "").lower()).strip("-")
+    slug = re.sub(r"-{2,}", "-", slug)
+    if not slug or not slug[0].isalnum():
+        slug = f"generated-{slug}".strip("-")
+    return slug[:80] if len(slug) >= 3 else "generated-probe"
+
+
+def _coerce_explorer_spec(raw: _ExplorerSpecResponse) -> ExplorerExperimentSpec | None:
+    """Repair a model-authored probe into a spec the runner will accept.
+
+    Returns None only when nothing executable survives. Repairs never widen
+    what the probe may do: unknown operators are dropped, never invented, and
+    the caps come from the DSL rather than from the response.
+    """
+    assertions: list[ExplorerAssertion] = []
+    for value in raw.assertions:
+        try:
+            assertions.append(ExplorerAssertion(str(value).strip().lower()))
+        except ValueError:
+            continue  # An operator outside the fixed set is simply not available.
+
+    required = [path.strip()[:200] for path in raw.required_response_paths if path and path.strip()][:8]
+    compare = [path.strip()[:200] for path in raw.compare_response_paths if path and path.strip()][:8]
+
+    # The cross-field rules are not expressible in JSON Schema, so satisfy them
+    # here instead of rejecting the response for breaking rules it never saw.
+    if ExplorerAssertion.REQUIRED_PATHS_PRESENT in assertions and not required:
+        assertions.remove(ExplorerAssertion.REQUIRED_PATHS_PRESENT)
+    if ExplorerAssertion.COMPARE_PATHS in assertions and not compare:
+        assertions.remove(ExplorerAssertion.COMPARE_PATHS)
+    if compare and ExplorerAssertion.COMPARE_PATHS not in assertions:
+        assertions.append(ExplorerAssertion.COMPARE_PATHS)
+
+    # Availability and status parity are enforced by the runner regardless, but
+    # the schema needs at least one operator present.
+    if not assertions:
+        assertions = [ExplorerAssertion.CANDIDATE_SUCCESS, ExplorerAssertion.STATUS_MATCH]
+
+    parameters = {
+        str(key)[:80]: str(value)[:500]
+        for key, value in list(raw.query_parameters.items())[:8]
+        if str(key).strip()
+    }
+
+    try:
+        return ExplorerExperimentSpec(
+            name=_slug(raw.name),
+            rationale=_clamp(raw.rationale, 500, "Authored by the planner for this change."),
+            hypothesis=_clamp(raw.hypothesis, 500, "The candidate may differ under this input."),
+            query_parameters=parameters,
+            assertions=assertions[:6],
+            required_response_paths=required,
+            compare_response_paths=compare,
+        )
+    except Exception:
+        return None
+
+
+def _coerce_plan(raw: _PlannerResponse, change: ChangeInput) -> ExperimentPlan:
+    """Build the real plan from the model's response, dropping what is unusable."""
+    adaptive: list[PlannedExperiment] = []
+    for item in raw.adaptive_experiments:
+        try:
+            experiment_id = ExperimentId(str(item.experiment_id).strip().lower())
+        except ValueError:
+            continue
+        adaptive.append(
+            PlannedExperiment(
+                experiment_id=experiment_id,
+                reason=_clamp(item.reason, 500, "Selected for this change."),
+                hypothesis=_clamp(item.hypothesis, 500, "The candidate may regress under this experiment."),
+            )
+        )
+
+    exploratory: list[ExplorerExperimentSpec] = []
+    if change.analysis_mode == AnalysisMode.EXPLORER:
+        for item in raw.exploratory_experiments:
+            spec = _coerce_explorer_spec(item)
+            if spec is not None:
+                exploratory.append(spec)
+
+    return ExperimentPlan(
+        detected_change=_clamp(raw.detected_change, 500, change.summary.strip() or "Change supplied for analysis."),
+        risk_summary=_clamp(raw.risk_summary, 1000, "Change-specific risk assessed by the planner."),
+        baseline_experiments=list(BASELINE_IDS),
+        adaptive_experiments=adaptive,
+        exploratory_experiments=exploratory,
+        analysis_mode=change.analysis_mode,
+        planner="vertex_gemini",
+        planner_note=None,
+    )
 
 
 def _fallback_explorer_specs(change: ChangeInput) -> list[ExplorerExperimentSpec]:
@@ -217,14 +360,24 @@ def build_plan(change: ChangeInput) -> ExperimentPlan:
             contents=json.dumps(prompt),
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
-                response_schema=ExperimentPlan,
+                response_schema=_PlannerResponse,
                 temperature=0.1,
             ),
         )
-        plan = ExperimentPlan.model_validate_json(response.text)
-        plan.planner = "vertex_gemini"
-        plan.planner_note = None
-        return _enforce_bounds(plan, change)
+        raw = _PlannerResponse.model_validate_json(response.text)
+        plan = _enforce_bounds(_coerce_plan(raw, change), change)
+
+        # A response that parsed but selected nothing is not a usable plan; the
+        # fallback at least guarantees a change-relevant experiment runs.
+        if not plan.adaptive_experiments and not plan.exploratory_experiments:
+            return _fallback_plan(change, "Vertex planner returned no experiments; deterministic fallback used.")
+        return plan
     except Exception as exc:
         # Planning must never stop the deterministic release gate from operating.
-        return _fallback_plan(change, f"Vertex planner failed ({type(exc).__name__}); deterministic fallback used.")
+        # Carry the reason through: a bare exception name made a schema problem
+        # indistinguishable from a permissions problem.
+        detail = str(exc).replace("\n", " ")[:200]
+        return _fallback_plan(
+            change,
+            f"Vertex planner failed ({type(exc).__name__}: {detail}); deterministic fallback used.",
+        )
