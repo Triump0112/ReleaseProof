@@ -1,0 +1,77 @@
+services:
+  backend:
+    build: ./backend
+    environment:
+      RELEASEPROOF_ALLOW_PRIVATE_TARGETS: "true"
+      RELEASEPROOF_LEDGER_DIR: /data/runs
+      RELEASEPROOF_USE_VERTEX: ${RELEASEPROOF_USE_VERTEX:-false}
+      GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT:-}
+      GOOGLE_CLOUD_LOCATION: ${GOOGLE_CLOUD_LOCATION:-us-central1}
+      RELEASEPROOF_GEMINI_MODEL: ${RELEASEPROOF_GEMINI_MODEL:-gemini-2.5-flash}
+    ports:
+      - "8000:8080"
+    volumes:
+      - releaseproof-data:/data/runs
+    depends_on:
+      stable-latency:
+        condition: service_healthy
+      candidate-latency:
+        condition: service_healthy
+      stable-contract:
+        condition: service_healthy
+      candidate-contract:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_USE_LIVE_TARGETS: "true"
+    ports:
+      - "3000:8080"
+    depends_on:
+      - backend
+
+  stable-latency:
+    build: ./demo-services
+    environment:
+      ROLE: stable
+      SCENARIO: latency
+    ports:
+      - "8101:8080"
+    healthcheck: &demo-health
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+
+  candidate-latency:
+    build: ./demo-services
+    environment:
+      ROLE: candidate
+      SCENARIO: latency
+    ports:
+      - "8102:8080"
+    healthcheck: *demo-health
+
+  stable-contract:
+    build: ./demo-services
+    environment:
+      ROLE: stable
+      SCENARIO: contract
+    ports:
+      - "8201:8080"
+    healthcheck: *demo-health
+
+  candidate-contract:
+    build: ./demo-services
+    environment:
+      ROLE: candidate
+      SCENARIO: contract
+    ports:
+      - "8202:8080"
+    healthcheck: *demo-health
+
+volumes:
+  releaseproof-data:
+

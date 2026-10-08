@@ -1,0 +1,128 @@
+"""Small deterministic services used by the ReleaseProof prototype.
+
+The same image can represent a stable or candidate Cloud Run revision.  Its
+behaviour is controlled by ``ROLE`` and ``SCENARIO`` so the verifier always
+compares identical routes while observing one intentional regression.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import time
+from typing import Literal
+
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
+
+Role = Literal["stable", "candidate"]
+Scenario = Literal["latency", "contract"]
+
+
+class QuoteRequest(BaseModel):
+    """Input shared by every revision and scenario."""
+
+    quantity: int = Field(default=1, ge=1, le=100)
+    unit_price: float = Field(default=499.0, gt=0, le=1_000_000)
+    currency: str = Field(default="INR", min_length=3, max_length=3)
+
+
+def _validated_setting(name: str, supplied: str, allowed: set[str]) -> str:
+    value = supplied.strip().lower()
+    if value not in allowed:
+        choices = ", ".join(sorted(allowed))
+        raise ValueError(f"{name} must be one of: {choices}; got {supplied!r}")
+    return value
+
+
+def create_app(
+    role: str | None = None,
+    scenario: str | None = None,
+) -> FastAPI:
+    """Create a configured demo service.
+
+    Passing values explicitly keeps tests independent of process-level
+    environment variables. Deployments normally use ROLE and SCENARIO.
+    """
+
+    configured_role: Role = _validated_setting(
+        "ROLE", role or os.getenv("ROLE", "stable"), {"stable", "candidate"}
+    )  # type: ignore[assignment]
+    configured_scenario: Scenario = _validated_setting(
+        "SCENARIO",
+        scenario or os.getenv("SCENARIO", "latency"),
+        {"latency", "contract"},
+    )  # type: ignore[assignment]
+
+    application = FastAPI(
+        title="ReleaseProof demo service",
+        version="1.0.0",
+        description="A controlled stable/candidate target for ReleaseProof experiments.",
+    )
+    # The intentional bottleneck is local to one app instance. With two slots,
+    # concurrent candidate requests queue in predictable waves.
+    candidate_capacity = asyncio.Semaphore(2)
+
+    @application.get("/health")
+    async def health() -> dict[str, str]:
+        # All demo revisions are deliberately healthy. A health check alone
+        # therefore cannot discover either seeded regression.
+        return {"status": "ok", "role": configured_role, "scenario": configured_scenario}
+
+    @application.get("/metadata")
+    async def metadata() -> dict[str, str]:
+        return {"role": configured_role, "scenario": configured_scenario}
+
+    async def build_quote(payload: QuoteRequest) -> dict[str, object]:
+        total = round(payload.quantity * payload.unit_price, 2)
+
+        if configured_scenario == "latency":
+            started = time.perf_counter()
+            if configured_role == "candidate":
+                # Each individual request still succeeds. At concurrency > 2,
+                # requests queue and p95 latency rises sharply and repeatably.
+                async with candidate_capacity:
+                    await asyncio.sleep(0.12)
+            else:
+                # Stable is non-blocking at the experiment's expected scale.
+                await asyncio.sleep(0.03)
+            elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
+            return {
+                "total": total,
+                "currency": payload.currency.upper(),
+                "processing_ms": elapsed_ms,
+            }
+
+        if configured_scenario == "contract":
+            await asyncio.sleep(0.01)
+            if configured_role == "candidate":
+                # Seeded breaking change: field renamed and number converted to
+                # a string. The endpoint remains available and healthy.
+                return {
+                    "amount": f"{total:.2f}",
+                    "currency": payload.currency.upper(),
+                }
+            return {"total": total, "currency": payload.currency.upper()}
+
+        # The setting validator makes this unreachable, but keeping an explicit
+        # failure is safer if more scenarios are added later.
+        raise HTTPException(status_code=500, detail="Unsupported scenario")
+
+    @application.post("/api/v1/quote")
+    async def quote(payload: QuoteRequest) -> dict[str, object]:
+        return await build_quote(payload)
+
+    @application.get("/api/v1/quote")
+    async def quote_probe(
+        quantity: int = 1,
+        unit_price: float = 499.0,
+        currency: str = "INR",
+    ) -> dict[str, object]:
+        """GET form used by the bounded ReleaseProof HTTP experiment runner."""
+        payload = QuoteRequest(quantity=quantity, unit_price=unit_price, currency=currency)
+        return await build_quote(payload)
+
+    return application
+
+
+app = create_app()
