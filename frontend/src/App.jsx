@@ -262,6 +262,7 @@ function ResultPanel({ scenario, result, isDemo }) {
   const verdict = result?.verdict || scenario.verdict;
   const metrics = result?.metrics || scenario.metrics;
   const evidence = result?.evidence || scenario.evidence;
+  const adjudication = result?.adjudication;
   const blocked = verdict === 'BLOCK';
   const inconclusive = verdict === 'INCONCLUSIVE';
   const verdictMessage = blocked
@@ -298,6 +299,45 @@ function ResultPanel({ scenario, result, isDemo }) {
         ))}
       </section>
 
+      {adjudication && adjudication.deltas?.length > 0 && (
+        <section className="panel adjudication-panel">
+          <div className="section-heading">
+            <div>
+              <span className="label">Intent reconciliation</span>
+              <h2>Did the change do only what it said?</h2>
+            </div>
+            <span className={`ai-pill ${adjudication.classifier === 'vertex_gemini' ? '' : 'muted'}`}>
+              <Icon name="spark" size={14}/>
+              {adjudication.classifier === 'vertex_gemini' ? 'Gemini classified' : 'Local classifier'}
+            </span>
+          </div>
+          <p className="adjudication-summary">{adjudication.summary}</p>
+          <div className="delta-head"><span>Field</span><span>Stable</span><span>Candidate</span><span>Assessment</span></div>
+          {adjudication.deltas.map((delta) => {
+            const call = adjudication.classifications?.find((item) => item.path === delta.path);
+            const label = call?.label || 'unexplained';
+            return (
+              <div className={`delta-row ${label}`} key={delta.path}>
+                <strong>{delta.path}</strong>
+                <span className="delta-value">{delta.stable_value ?? '—'}</span>
+                <span className="delta-value">{delta.candidate_value ?? '—'}</span>
+                <div className="delta-call">
+                  <span className={`delta-tag ${label}`}>
+                    {label === 'explained' ? 'Declared' : label === 'benign_noise' ? 'Non-deterministic' : 'Undeclared'}
+                  </span>
+                  <p>{call?.rationale}</p>
+                  {call?.diff_evidence && <code>{call.diff_evidence}</code>}
+                </div>
+              </div>
+            );
+          })}
+          <div className="adjudication-foot">
+            <Icon name="shield" size={15}/>
+            <span>Gemini labels each difference and must cite the diff. The block/pass rule is fixed in code.</span>
+          </div>
+        </section>
+      )}
+
       <div className="result-columns">
         <section className="panel timeline-panel">
           <div className="section-heading compact"><div><span className="label">Replayable evidence</span><h2>Decision timeline</h2></div></div>
@@ -329,7 +369,13 @@ function normalizeApiResult(payload) {
   if (body.ledger && typeof body.ledger === 'object') {
     const ledger = body.ledger;
     const evidence = Array.isArray(ledger.evidence) ? ledger.evidence : [];
-    const selected = [...evidence].reverse().find((item) => !['health_check', 'api_smoke'].includes(item.experiment_id)) || evidence.at(-1);
+    // Surface whatever actually decided the verdict. Without this, a run blocked
+    // by the smoke baseline would display the passing adaptive experiment's
+    // metrics next to a BLOCK banner.
+    const selected = evidence.find((item) => item.blocking && item.passed === false)
+      || [...evidence].reverse().find((item) => !['health_check', 'api_smoke'].includes(item.experiment_id))
+      || evidence.at(-1);
+    const adjudication = evidence.map((item) => item.adjudication).find(Boolean) || null;
     const stableLatency = selected?.stable?.p95_latency_ms;
     const candidateLatency = selected?.candidate?.p95_latency_ms;
     const stableErrors = selected?.stable?.error_rate;
@@ -344,6 +390,7 @@ function normalizeApiResult(payload) {
       verdict: ledger.verdict,
       runId: body.id || ledger.run_id,
       evidenceCount: evidence.length,
+      adjudication,
       metrics: selected ? [
         {
           label: 'p95 latency',

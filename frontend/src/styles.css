@@ -156,6 +156,32 @@ code { font-family: 'DM Mono', monospace; }
 .metric-row > span { color: #a9b4bf; }
 .metric-row .bad-delta { color: var(--red); }.metric-row .good-delta { color: var(--lime); }
 
+/* Intent reconciliation: every measured difference, and whether the change
+   actually accounts for it. */
+.adjudication-panel { margin-top: 14px; animation: reveal .45s .08s both; }
+.ai-pill.muted { background: rgba(139,152,168,.07); color: var(--muted); border-color: rgba(139,152,168,.2); }
+.adjudication-summary { color: #a9b4bf; font-size: 12.5px; line-height: 1.6; margin: 0 0 16px; padding: 11px 13px;
+  border-left: 2px solid var(--line); background: rgba(19,26,34,.5); border-radius: 0 7px 7px 0; }
+.delta-head, .delta-row { display: grid; grid-template-columns: 1.1fr .8fr .8fr 1.9fr; align-items: start; gap: 10px; }
+.delta-head { color: #64717f; font: 8px 'DM Mono'; text-transform: uppercase; letter-spacing: .1em; padding: 0 13px 8px; }
+.delta-row { padding: 13px; border-top: 1px solid var(--line); font: 11px 'DM Mono'; }
+.delta-row strong { font: 600 11px 'Manrope'; color: #c4cdd6; word-break: break-all; }
+.delta-value { color: #8b98a8; word-break: break-all; }
+.delta-row.unexplained { background: rgba(255,110,114,.05); border-left: 2px solid var(--red); }
+.delta-row.unexplained strong { color: #ffd7d8; }
+.delta-row.unexplained .delta-value:last-of-type { color: var(--red); }
+.delta-call p { margin: 6px 0 0; color: var(--muted); font: 10.5px/1.55 'Manrope'; }
+.delta-call code { display: inline-block; margin-top: 6px; padding: 3px 6px; border-radius: 4px;
+  background: rgba(96,217,241,.07); color: var(--cyan); font: 9.5px 'DM Mono'; word-break: break-all; }
+.delta-tag { display: inline-block; padding: 3px 7px; border-radius: 20px; font: 8px 'DM Mono';
+  text-transform: uppercase; letter-spacing: .08em; border: 1px solid transparent; }
+.delta-tag.explained { background: rgba(183,239,91,.08); color: var(--lime); border-color: rgba(183,239,91,.22); }
+.delta-tag.benign_noise { background: rgba(139,152,168,.08); color: var(--muted); border-color: rgba(139,152,168,.2); }
+.delta-tag.unexplained { background: rgba(255,110,114,.1); color: var(--red); border-color: rgba(255,110,114,.28); }
+.adjudication-foot { display: flex; align-items: center; gap: 8px; margin-top: 16px; padding-top: 14px;
+  border-top: 1px solid var(--line); color: #6e7b88; font-size: 10.5px; }
+.adjudication-foot svg { color: var(--lime); flex-shrink: 0; }
+
 .result-columns { display: grid; grid-template-columns: 1.4fr 1fr; gap: 14px; margin-top: 14px; }
 .timeline-panel, .missed-panel { padding: 25px; animation: reveal .45s .12s both; }
 .section-heading.compact { margin-bottom: 8px; }
@@ -198,6 +224,8 @@ footer { max-width: 1120px; margin: auto; padding: 30px; border-top: 1px solid v
   .confidence { border-left: 0; border-top: 1px solid rgba(255,255,255,.08); padding: 14px 0 0; width: 100%; align-items: flex-start; }
   .metrics-panel { padding: 20px 14px; overflow-x: auto; }
   .metrics-head, .metric-row { min-width: 540px; }
+  .adjudication-panel { padding: 20px 14px; overflow-x: auto; }
+  .delta-head, .delta-row { min-width: 620px; }
   .section-heading { align-items: flex-start; gap: 12px; }
   .evidence-id { white-space: nowrap; }
   footer p { display: none; }
