@@ -9,6 +9,15 @@ AI plans the investigation and explains the evidence.
 Measured evidence makes the release decision.
 ```
 
+## Two investigation modes
+
+| Mode | What Gemini can do | Decision authority |
+|---|---|---|
+| **Guarded Gate** (default) | Select up to two server-owned experiments | Fixed policies may block the release |
+| **AI Explorer** (optional) | Do everything in Guarded Gate, then author constrained GET/query probe specifications using fixed assertion operators | Findings are review-only and cannot change the guarded verdict |
+
+Explorer does **not** execute model-authored Python, JavaScript or shell commands. Gemini supplies declarative data — query parameters, hypotheses, response paths and assertion names — and the server-owned runner interprets it. It cannot choose a URL, method, header, credential, threshold or verdict. This gives the prototype broader discovery without treating probabilistic test generation as a trusted deployment controller.
+
 ## What it catches that a passing test suite does not
 
 | Scenario | Candidate behaviour | What conventional checks report |
@@ -50,8 +59,8 @@ The third case is the one no shape-based check can reach. The response keeps eve
           evidence ledger
 ```
 
-**Gemini may** interpret the change, choose allowlisted experiments, classify an observed difference, and explain the evidence.
-**Gemini may not** invent a measurement, issue arbitrary requests, choose a threshold, suppress a failed result, or override the verdict.
+**Gemini may** interpret the change, choose allowlisted experiments, classify an observed difference, explain the evidence, and—only in AI Explorer—author a constrained declarative probe.
+**Gemini may not** invent a measurement, supply executable source code, select an arbitrary target or HTTP method, choose a threshold, suppress a failed result, or override the verdict.
 
 Classification requires a citation. A delta the model calls "explained" without quoting supporting diff evidence is downgraded to *unexplained*, and a delta it fails to classify at all is treated as *unexplained*. The failure direction is a blocked release, never a silently shipped regression. With Vertex disabled the system still runs, using a deliberately conservative offline classifier.
 
@@ -113,16 +122,17 @@ Without `VITE_USE_LIVE_TARGETS=true` the API serves repeatable fixtures, which i
 
 - `GET  /health` — service health
 - `GET  /api/catalog` — bounded experiment catalog
+- `GET  /api/risk-classes` — honest coverage map (`implemented`, `partial`, `planned`)
 - `GET  /api/scenarios` — demonstration fixtures
 - `POST /api/analyze` — plan, execute, and decide
 - `GET  /api/runs/{id}` — immutable run record
 
-Health and smoke always execute. Intent reconciliation runs on the smoke baseline, so every release is checked for undeclared behaviour even when the planner selects no adaptive experiment. Gemini may add at most two adaptive experiments within the request and time budget.
+Health and smoke always execute. Intent reconciliation runs on the smoke baseline, so every release is checked for undeclared behaviour even when the planner selects no adaptive experiment. `analysis_mode` defaults to `guarded`; setting it to `explorer` adds up to two review-only declarative probes within the same request and time budget.
 
 ## Verification
 
 ```bash
-cd backend       && python -m pytest        # 18 tests
+cd backend       && python -m pytest        # 23 tests
 cd demo-services && python -m pytest        # 13 tests
 cd frontend      && npm run build
 python scripts/verify_live_stack.py         # real HTTP, all three scenarios
@@ -145,7 +155,7 @@ The long-term shape of this is a Cloud Deploy verification task, not a replaceme
 
 ## Prototype boundaries
 
-A hackathon prototype, not a production release controller. The experiment catalog and thresholds are intentionally narrow. Targets are restricted to HTTP(S), execution is request-bounded, and private targets are disabled unless explicitly enabled for the local Compose network. Latency comparisons use a small number of trials and are reported as observed deltas rather than statistically significant ones. Production use would additionally need authenticated revision discovery, Firestore-backed immutable evidence, Cloud Logging and Monitoring integration, stronger statistical policies, and organization-specific calibration.
+A hackathon prototype, not a production release controller. The experiment catalog and thresholds are intentionally narrow. The risk-classes endpoint explicitly separates implemented, partial and planned coverage; it is a taxonomy, not a claim that all failures are known. Targets are restricted to HTTP(S), execution is request-bounded, and private targets are disabled unless explicitly enabled for the local Compose network. Explorer is GET-only and review-only. Production use would additionally need a hardened workload sandbox before allowing model-authored source code, authenticated revision discovery, Firestore-backed immutable evidence, Cloud Logging and Monitoring integration, stronger statistical policies, and organization-specific calibration.
 
 ## Repository map
 
@@ -153,7 +163,7 @@ A hackathon prototype, not a production release controller. The experiment catal
 ReleaseProof/
 ├── backend/app/adjudicator.py   intent reconciliation (deltas → classification → policy)
 ├── backend/app/planner.py       Gemini experiment planning, schema-constrained
-├── backend/app/executor.py      bounded paired HTTP runner + deterministic evaluator
+├── backend/app/executor.py      guarded runner + fixed interpreter for Explorer specs
 ├── backend/app/ledger.py        replayable evidence records
 ├── frontend/                    React dashboard
 ├── demo-services/               controlled stable/candidate revisions

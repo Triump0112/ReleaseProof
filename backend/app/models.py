@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, HttpUrl, model_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
 
 class Verdict(str, Enum):
@@ -20,6 +20,11 @@ class RunStatus(str, Enum):
     FAILED = "FAILED"
 
 
+class AnalysisMode(str, Enum):
+    GUARDED = "guarded"
+    EXPLORER = "explorer"
+
+
 class ExperimentId(str, Enum):
     HEALTH = "health_check"
     SMOKE = "api_smoke"
@@ -29,6 +34,51 @@ class ExperimentId(str, Enum):
     PAYLOAD = "payload_size"
     IDEMPOTENCY = "retry_idempotency"
     TIMEOUT = "dependency_timeout"
+    AI_EXPLORER = "ai_explorer"
+
+
+class ExplorerAssertion(str, Enum):
+    """Fixed assertion operators available to an AI-authored probe spec."""
+
+    CANDIDATE_SUCCESS = "candidate_success"
+    STATUS_MATCH = "status_match"
+    RESPONSE_SHAPE_MATCH = "response_shape_match"
+    RESPONSE_TYPES_MATCH = "response_types_match"
+    REQUIRED_PATHS_PRESENT = "required_paths_present"
+    COMPARE_PATHS = "compare_paths"
+    LATENCY_WITHIN_POLICY = "latency_within_policy"
+
+
+class ExplorerExperimentSpec(BaseModel):
+    """Declarative test DSL. The model authors data, never executable code."""
+
+    # Reject unknown keys rather than ignoring them. A spec carrying an invented
+    # field such as `target_url` or `headers` is already outside the contract,
+    # so it fails validation instead of being silently dropped — the guarantee
+    # is then auditable from the schema rather than from runner behaviour.
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=3, max_length=80, pattern=r"^[a-z0-9][a-z0-9_-]*$")
+    rationale: str = Field(min_length=3, max_length=500)
+    hypothesis: str = Field(min_length=3, max_length=500)
+    query_parameters: dict[str, str] = Field(default_factory=dict, max_length=8)
+    assertions: list[ExplorerAssertion] = Field(min_length=1, max_length=6)
+    required_response_paths: list[str] = Field(default_factory=list, max_length=8)
+    compare_response_paths: list[str] = Field(default_factory=list, max_length=8)
+
+    @model_validator(mode="after")
+    def validate_safe_dsl(self) -> "ExplorerExperimentSpec":
+        for key, value in self.query_parameters.items():
+            if not key or len(key) > 80 or len(value) > 500:
+                raise ValueError("Explorer query parameters exceed the safe DSL limits")
+        paths = [*self.required_response_paths, *self.compare_response_paths]
+        if any(not path or len(path) > 200 for path in paths):
+            raise ValueError("Explorer response paths must be between 1 and 200 characters")
+        if ExplorerAssertion.REQUIRED_PATHS_PRESENT in self.assertions and not self.required_response_paths:
+            raise ValueError("required_paths_present needs at least one required_response_path")
+        if ExplorerAssertion.COMPARE_PATHS in self.assertions and not self.compare_response_paths:
+            raise ValueError("compare_paths needs at least one compare_response_path")
+        return self
 
 
 class ExperimentDefinition(BaseModel):
@@ -43,6 +93,7 @@ class ExperimentDefinition(BaseModel):
 
 class Budget(BaseModel):
     max_adaptive_experiments: int = Field(default=2, ge=0, le=2)
+    max_exploratory_experiments: int = Field(default=1, ge=0, le=2)
     max_requests: int = Field(default=1000, ge=10, le=1000)
     max_duration_seconds: int = Field(default=90, ge=5, le=90)
     trials: int = Field(default=3, ge=2, le=5)
@@ -64,6 +115,7 @@ class ChangeInput(BaseModel):
     scenario_id: str | None = Field(default=None, max_length=80)
     request_path: str = Field(default="/", pattern=r"^/[^\s]*$", max_length=300)
     expected_contract: ExpectedContract | None = None
+    analysis_mode: AnalysisMode = AnalysisMode.GUARDED
     budget: Budget = Field(default_factory=Budget)
 
     @model_validator(mode="after")
@@ -87,6 +139,8 @@ class ExperimentPlan(BaseModel):
     risk_summary: str = Field(min_length=3, max_length=1000)
     baseline_experiments: list[ExperimentId] = Field(default_factory=lambda: [ExperimentId.HEALTH, ExperimentId.SMOKE])
     adaptive_experiments: list[PlannedExperiment] = Field(max_length=2)
+    exploratory_experiments: list[ExplorerExperimentSpec] = Field(default_factory=list, max_length=2)
+    analysis_mode: AnalysisMode = AnalysisMode.GUARDED
     planner: Literal["vertex_gemini", "deterministic_fallback"]
     planner_note: str | None = Field(default=None, max_length=1000)
 
@@ -152,6 +206,8 @@ class ExperimentEvidence(BaseModel):
     explanation: str
     thresholds: dict[str, float | int | str] = Field(default_factory=dict)
     adjudication: Adjudication | None = None
+    review_only: bool = False
+    exploratory_spec: ExplorerExperimentSpec | None = None
 
 
 class EvidenceLedger(BaseModel):
@@ -164,6 +220,7 @@ class EvidenceLedger(BaseModel):
     evidence: list[ExperimentEvidence] = Field(default_factory=list)
     verdict: Verdict | None = None
     verdict_reasons: list[str] = Field(default_factory=list)
+    review_findings: list[str] = Field(default_factory=list)
 
 
 class RunRecord(BaseModel):
@@ -182,4 +239,3 @@ class ScenarioSummary(BaseModel):
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
-

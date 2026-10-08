@@ -12,6 +12,11 @@ def test_health_and_catalog(client):
     ids = {item["id"] for item in catalog.json()}
     assert {"health_check", "api_smoke", "contract_compatibility", "bounded_load"} <= ids
 
+    risk_classes = client.get("/api/risk-classes")
+    assert risk_classes.status_code == 200
+    coverage = {item["coverage"] for item in risk_classes.json()}
+    assert {"implemented", "partial", "planned"} <= coverage
+
 
 def test_concurrency_change_selects_load_and_blocks(client):
     response = client.post("/api/analyze", json=_scenario_payload(client, "concurrency-regression"))
@@ -87,3 +92,36 @@ def test_zero_adaptive_budget_runs_baseline_only(client):
     run = response.json()
     assert run["ledger"]["plan"]["adaptive_experiments"] == []
     assert [item["experiment_id"] for item in run["ledger"]["evidence"]] == ["health_check", "api_smoke"]
+
+
+def test_explorer_mode_authors_bounded_review_only_probe(client):
+    payload = _scenario_payload(client, "healthy-release")
+    payload["analysis_mode"] = "explorer"
+    response = client.post("/api/analyze", json=payload)
+    assert response.status_code == 200
+    run = response.json()
+    plan = run["ledger"]["plan"]
+    assert plan["analysis_mode"] == "explorer"
+    assert len(plan["exploratory_experiments"]) == 1
+    generated = plan["exploratory_experiments"][0]
+    assert generated["query_parameters"] == {"releaseproof_explorer": "boundary"}
+    assert "source_code" not in generated
+    assert "url" not in generated
+
+    explorer = next(
+        item for item in run["ledger"]["evidence"] if item["experiment_id"] == "ai_explorer"
+    )
+    assert explorer["blocking"] is False
+    assert explorer["review_only"] is True
+    assert explorer["exploratory_spec"]["name"] == "generated-boundary-probe"
+    assert run["ledger"]["verdict"] == "PASS"
+
+
+def test_guarded_mode_never_adds_generated_probe(client):
+    payload = _scenario_payload(client, "healthy-release")
+    response = client.post("/api/analyze", json=payload)
+    assert response.status_code == 200
+    run = response.json()
+    assert run["ledger"]["plan"]["analysis_mode"] == "guarded"
+    assert run["ledger"]["plan"]["exploratory_experiments"] == []
+    assert all(item["experiment_id"] != "ai_explorer" for item in run["ledger"]["evidence"])

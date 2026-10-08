@@ -140,16 +140,17 @@ const TARGET_URLS = {
   },
 };
 
-function analysisPayload(scenario) {
-  if (!liveTargetsEnabled) return scenario.apiPayload;
+function analysisPayload(scenario, mode) {
+  if (!liveTargetsEnabled) return { ...scenario.apiPayload, analysis_mode: mode };
   const targets = TARGET_URLS[scenario.id];
-  if (!targets) return scenario.apiPayload;
+  if (!targets) return { ...scenario.apiPayload, analysis_mode: mode };
   return {
     ...scenario.apiPayload,
     scenario_id: undefined,
     request_path: '/api/v1/quote',
     stable_url: targets.stable,
     candidate_url: targets.candidate,
+    analysis_mode: mode,
   };
 }
 
@@ -213,37 +214,60 @@ function ScenarioPicker({ selected, onSelect, disabled }) {
   );
 }
 
-function PlanPanel({ scenario }) {
+function ModeSelector({ mode, onChange, disabled }) {
+  return (
+    <section className="mode-selector" aria-labelledby="mode-heading">
+      <div className="mode-heading">
+        <span className="step-label">02 / CHOOSE INVESTIGATION MODE</span>
+        <h2 id="mode-heading">How much freedom should Gemini have?</h2>
+      </div>
+      <div className="mode-grid" role="radiogroup" aria-label="Investigation mode">
+        <button className={`mode-card ${mode === 'guarded' ? 'selected' : ''}`} role="radio" aria-checked={mode === 'guarded'} onClick={() => onChange('guarded')} disabled={disabled}>
+          <span className="mode-icon"><Icon name="shield"/></span>
+          <span><small>DEFAULT · RELEASE-BLOCKING</small><strong>Guarded Gate</strong><em>Gemini selects only approved experiments. Fixed code executes them and owns the verdict.</em></span>
+        </button>
+        <button className={`mode-card explorer ${mode === 'explorer' ? 'selected' : ''}`} role="radio" aria-checked={mode === 'explorer'} onClick={() => onChange('explorer')} disabled={disabled}>
+          <span className="mode-icon"><Icon name="spark"/></span>
+          <span><small>OPTIONAL · REVIEW-ONLY</small><strong>AI Explorer</strong><em>Gemini also authors constrained GET/query probe specs. Findings require human review.</em></span>
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function PlanPanel({ scenario, mode }) {
+  const explorer = mode === 'explorer';
   return (
     <section className="panel plan-panel">
-      <div className="section-kicker"><Icon name="spark" /><span>Gemini risk analysis</span><span className="ai-pill">AI planned</span></div>
-      <h2>A test plan built for this change</h2>
+      <div className="section-kicker"><Icon name="spark" /><span>Gemini risk analysis</span><span className="ai-pill">{explorer ? 'AI authored + selected' : 'AI selected'}</span></div>
+      <h2>{explorer ? 'Guarded evidence plus a generated probe' : 'A bounded plan built for this change'}</h2>
       <div className="plan-grid">
         <div className="plan-block wide">
           <span className="label">Risk hypothesis</span>
           <p>{scenario.hypothesis}</p>
         </div>
         <div className="plan-block">
-          <span className="label">Selected experiment</span>
+          <span className="label">{explorer ? 'Guarded experiment' : 'Selected experiment'}</span>
           <strong>{scenario.experiment}</strong>
           <code>{scenario.experimentKey}</code>
         </div>
         <div className="plan-block">
           <span className="label">Execution budget</span>
           <strong>{scenario.budget}</strong>
-          <span>Bounded and pre-authorized</span>
+          <span>{explorer ? 'Guarded gate + review-only probe' : 'Bounded and pre-authorized'}</span>
         </div>
         <div className="plan-block wide policy">
-          <span className="label">Deterministic policy</span>
-          <p>{scenario.threshold}</p>
+          <span className="label">{explorer ? 'Decision boundary' : 'Deterministic policy'}</span>
+          <p>{explorer ? 'Guarded evidence may block. Generated Explorer findings are visible and auditable, but require human review.' : scenario.threshold}</p>
         </div>
+        {explorer && <div className="plan-block wide explorer-boundary"><span className="label">Explorer sandbox contract</span><p>GET only · supplied revision endpoint only · query parameters only · fixed assertion operators · no source code, shell, credentials or arbitrary network targets</p></div>}
       </div>
     </section>
   );
 }
 
-function LoadingState({ scenario }) {
-  const steps = ['Inspecting deployment diff', `Planning ${scenario.experiment.toLowerCase()}`, 'Running paired experiment', 'Evaluating policy'];
+function LoadingState({ scenario, mode }) {
+  const steps = ['Inspecting deployment diff', `Planning ${scenario.experiment.toLowerCase()}`, mode === 'explorer' ? 'Authoring constrained probe spec' : 'Running paired experiment', 'Evaluating fixed policy'];
   return (
     <section className="panel loading-panel" aria-live="polite">
       <div className="orb"><span /><span /><span /></div>
@@ -258,11 +282,13 @@ function LoadingState({ scenario }) {
   );
 }
 
-function ResultPanel({ scenario, result, isDemo }) {
+function ResultPanel({ scenario, result, isDemo, mode }) {
   const verdict = result?.verdict || scenario.verdict;
   const metrics = result?.metrics || scenario.metrics;
   const evidence = result?.evidence || scenario.evidence;
   const adjudication = result?.adjudication;
+  const explorerSpecs = result?.explorerExperiments || [];
+  const reviewFindings = result?.reviewFindings || [];
   const blocked = verdict === 'BLOCK';
   const inconclusive = verdict === 'INCONCLUSIVE';
   const verdictMessage = blocked
@@ -282,6 +308,26 @@ function ResultPanel({ scenario, result, isDemo }) {
         </div>
         <div className="confidence"><span>{result?.evidenceCount || 3}</span><small>experiments recorded</small></div>
       </section>
+
+      {mode === 'explorer' && (
+        <section className="panel explorer-result">
+          <div className="section-heading">
+            <div><span className="label">AI Explorer · review-only</span><h2>Generated probe, contained execution.</h2></div>
+            <span className="ai-pill"><Icon name="spark" size={14}/>Human review boundary</span>
+          </div>
+          {explorerSpecs.length > 0 ? explorerSpecs.map((spec) => (
+            <div className="explorer-spec" key={spec.name}>
+              <div><strong>{spec.name}</strong><p>{spec.hypothesis}</p></div>
+              <code>GET {scenario.apiPayload.request_path}?{new URLSearchParams(spec.query_parameters || {}).toString()}</code>
+              <div className="assertion-list">{(spec.assertions || []).map((assertion) => <span key={assertion}>{assertion.replaceAll('_', ' ')}</span>)}</div>
+            </div>
+          )) : <p className="explorer-placeholder">The live API will display Gemini’s generated declarative spec here. The fallback demo never executes model-authored source code.</p>}
+          <div className={`review-status ${reviewFindings.length ? 'finding' : ''}`}>
+            <Icon name={reviewFindings.length ? 'info' : 'check'} size={17}/>
+            <span>{reviewFindings.length ? `${reviewFindings.length} exploratory finding(s) need human review. They did not alter the guarded verdict.` : 'No review finding was raised by the generated probe.'}</span>
+          </div>
+        </section>
+      )}
 
       <section className="panel metrics-panel">
         <div className="section-heading">
@@ -391,6 +437,9 @@ function normalizeApiResult(payload) {
       runId: body.id || ledger.run_id,
       evidenceCount: evidence.length,
       adjudication,
+      analysisMode: ledger.plan?.analysis_mode || 'guarded',
+      explorerExperiments: ledger.plan?.exploratory_experiments || [],
+      reviewFindings: ledger.review_findings || [],
       metrics: selected ? [
         {
           label: 'p95 latency',
@@ -439,6 +488,7 @@ export default function App() {
   const [result, setResult] = useState(null);
   const [isDemo, setIsDemo] = useState(false);
   const [error, setError] = useState('');
+  const [mode, setMode] = useState('guarded');
   const scenario = useMemo(() => scenarios[scenarioId], [scenarioId]);
 
   const selectScenario = (id) => {
@@ -461,7 +511,7 @@ export default function App() {
       const response = await fetch('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(analysisPayload(scenario)),
+        body: JSON.stringify(analysisPayload(scenario, mode)),
         signal: controller.signal,
       });
       clearTimeout(timeout);
@@ -502,6 +552,8 @@ export default function App() {
           </div>
           <ScenarioPicker selected={scenarioId} onSelect={selectScenario} disabled={phase === 'loading'} />
 
+          <ModeSelector mode={mode} onChange={(nextMode) => { setMode(nextMode); setPhase('ready'); setResult(null); setIsDemo(false); setError(''); }} disabled={phase === 'loading'} />
+
           <div className="comparison-wrap">
             <div className="comparison-line"><span>Paired Cloud Run revisions</span></div>
             <div className="revision-grid">
@@ -511,17 +563,17 @@ export default function App() {
             </div>
           </div>
 
-          <PlanPanel scenario={scenario}/>
+          <PlanPanel scenario={scenario} mode={mode}/>
 
           <div className="run-bar">
             <div><Icon name="branch"/><span><strong>Ready to verify</strong><small>Both revisions are reachable; candidate receives 0% traffic.</small></span></div>
             <button className="run-button" onClick={runAnalysis} disabled={phase === 'loading'}>
-              {phase === 'loading' ? <><span className="button-spinner"/>Analyzing…</> : <><Icon name="run"/>Run release proof</>}
+              {phase === 'loading' ? <><span className="button-spinner"/>Analyzing…</> : <><Icon name="run"/>Run {mode === 'explorer' ? 'with AI Explorer' : 'guarded proof'}</>}
             </button>
           </div>
 
-          {phase === 'loading' && <LoadingState scenario={scenario}/>} 
-          {phase === 'result' && <ResultPanel scenario={scenario} result={result} isDemo={isDemo} error={error}/>} 
+          {phase === 'loading' && <LoadingState scenario={scenario} mode={mode}/>}
+          {phase === 'result' && <ResultPanel scenario={scenario} result={result} isDemo={isDemo} error={error} mode={mode}/>}
         </section>
       </main>
 

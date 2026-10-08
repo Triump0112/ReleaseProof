@@ -4,7 +4,45 @@ import json
 import os
 
 from .catalog import ADAPTIVE_IDS, BASELINE_IDS
-from .models import ChangeInput, ExperimentId, ExperimentPlan, PlannedExperiment
+from .models import (
+    AnalysisMode,
+    ChangeInput,
+    ExplorerAssertion,
+    ExplorerExperimentSpec,
+    ExperimentId,
+    ExperimentPlan,
+    PlannedExperiment,
+)
+
+
+def _fallback_explorer_specs(change: ChangeInput) -> list[ExplorerExperimentSpec]:
+    if change.analysis_mode != AnalysisMode.EXPLORER or not change.budget.max_exploratory_experiments:
+        return []
+    text = f"{change.summary}\n{change.diff}".lower()
+    query_parameters = {"releaseproof_explorer": "boundary"}
+    hypothesis = "A boundary-flavoured request may reveal behaviour that the normal smoke request does not exercise."
+    compare_paths: list[str] = []
+    assertions = [
+        ExplorerAssertion.CANDIDATE_SUCCESS,
+        ExplorerAssertion.STATUS_MATCH,
+        ExplorerAssertion.RESPONSE_SHAPE_MATCH,
+        ExplorerAssertion.RESPONSE_TYPES_MATCH,
+        ExplorerAssertion.LATENCY_WITHIN_POLICY,
+    ]
+    if any(word in text for word in ("total", "amount", "tax", "discount", "price")):
+        compare_paths = ["currency"]
+        assertions.append(ExplorerAssertion.COMPARE_PATHS)
+        hypothesis = "A generated boundary probe may expose an undeclared pricing or response invariant change."
+    return [
+        ExplorerExperimentSpec(
+            name="generated-boundary-probe",
+            rationale="The guarded catalog cannot anticipate every input interaction, so Explorer adds a constrained differential probe.",
+            hypothesis=hypothesis,
+            query_parameters=query_parameters,
+            assertions=assertions,
+            compare_response_paths=compare_paths,
+        )
+    ][: change.budget.max_exploratory_experiments]
 
 
 def _fallback_plan(change: ChangeInput, note: str | None = None) -> ExperimentPlan:
@@ -68,6 +106,8 @@ def _fallback_plan(change: ChangeInput, note: str | None = None) -> ExperimentPl
         adaptive_experiments=[
             PlannedExperiment(experiment_id=item[0], reason=item[1], hypothesis=item[2]) for item in selected
         ],
+        exploratory_experiments=_fallback_explorer_specs(change),
+        analysis_mode=change.analysis_mode,
         planner="deterministic_fallback",
         planner_note=note,
     )
@@ -85,6 +125,13 @@ def _enforce_bounds(plan: ExperimentPlan, change: ChangeInput) -> ExperimentPlan
         if len(bounded) >= change.budget.max_adaptive_experiments:
             break
     plan.adaptive_experiments = bounded
+    plan.analysis_mode = change.analysis_mode
+    if change.analysis_mode == AnalysisMode.EXPLORER:
+        plan.exploratory_experiments = plan.exploratory_experiments[
+            : change.budget.max_exploratory_experiments
+        ]
+    else:
+        plan.exploratory_experiments = []
     return plan
 
 
@@ -104,11 +151,18 @@ def build_plan(change: ChangeInput) -> ExperimentPlan:
 
         client = genai.Client(vertexai=True, project=project, location=location)
         prompt = {
-            "task": "Select at most two bounded experiments for this release change.",
+            "task": (
+                "Select bounded catalog experiments and, only in explorer mode, author constrained declarative probes."
+            ),
             "rules": [
                 "Select only from: " + ", ".join(item.value for item in ADAPTIVE_IDS),
                 "Do not choose health_check or api_smoke; the runner always executes them.",
                 "Every choice needs a falsifiable hypothesis tied to the supplied diff.",
+                "In guarded mode exploratory_experiments must be empty.",
+                "In explorer mode author at most the requested number of exploratory experiments.",
+                "Explorer probes are GET-only against the supplied request path; you may provide query parameters only.",
+                "Use only the fixed assertion operators in the schema. Never produce source code, shell commands, URLs, headers, or credentials.",
+                "Explorer findings require review and never decide the release verdict.",
                 "Return only JSON matching the response schema.",
             ],
             "change": change.model_dump(mode="json"),

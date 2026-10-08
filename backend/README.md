@@ -1,6 +1,6 @@
 # ReleaseProof API
 
-FastAPI prototype for evidence-locked, pre-traffic differential release verification. It compares stable and candidate revisions with a fixed baseline plus at most two adaptively selected experiments, then computes a deterministic `PASS`, `BLOCK`, or `INCONCLUSIVE` verdict.
+FastAPI prototype for evidence-locked, pre-traffic differential release verification. It compares stable and candidate revisions with a fixed baseline plus at most two adaptively selected experiments, then computes a deterministic `PASS`, `BLOCK`, or `INCONCLUSIVE` verdict. Optional AI Explorer probes are recorded as review-only evidence and cannot change that verdict.
 
 ## Local run
 
@@ -38,12 +38,13 @@ export GOOGLE_CLOUD_LOCATION=us-central1
 export RELEASEPROOF_GEMINI_MODEL=gemini-2.5-flash
 ```
 
-Gemini may select only experiments from the server-owned catalogue. Its JSON output is schema-validated and clamped to the supplied budget. If planning fails, the service records the reason and safely falls back to deterministic planning. Gemini never chooses thresholds or verdicts.
+In default `guarded` mode, Gemini may select only experiments from the server-owned catalogue. With `analysis_mode: "explorer"`, it may also author constrained declarative GET/query probes from fixed assertion operators. Its JSON output is schema-validated and clamped to the supplied budget. If planning fails, the service records the reason and safely falls back to deterministic planning. Gemini never chooses target URLs, HTTP methods, headers, credentials, executable code, thresholds or verdicts.
 
 ## Safety and evidence
 
 - No shell commands or submitted code are executed.
 - Live mode only makes bounded HTTP GET probes.
+- AI Explorer evidence is always non-blocking and explicitly marked `review_only`.
 - Private and metadata targets are denied unless local development explicitly sets `RELEASEPROOF_ALLOW_PRIVATE_TARGETS=true`.
 - Evidence is written atomically as versioned JSON under `data/runs` (override with `RELEASEPROOF_LEDGER_DIR`).
 - The prototype caps adaptive experiments, duration, trials and requests through validated input fields.
@@ -53,4 +54,3 @@ Gemini may select only experiments from the server-owned catalogue. Its JSON out
 ```bash
 pytest
 ```
-

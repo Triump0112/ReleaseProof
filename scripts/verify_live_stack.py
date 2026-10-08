@@ -130,6 +130,11 @@ def analyze_side_effect(payload: dict[str, object]) -> None:
     health = next(item for item in ledger["evidence"] if item["experiment_id"] == "health_check")
     assert health["passed"] is True, health
 
+    explorer = next(item for item in ledger["evidence"] if item["experiment_id"] == "ai_explorer")
+    assert explorer["review_only"] is True, explorer
+    assert explorer["blocking"] is False, explorer
+    assert explorer["exploratory_spec"]["name"] == "generated-boundary-probe", explorer
+
     print(f"intent_reconciliation: {ledger['verdict']} - {smoke['explanation']}")
 
 
@@ -199,6 +204,7 @@ def main() -> None:
                 "stable_url": f"http://{HOST}:{STABLE_PORT}",
                 "candidate_url": f"http://{HOST}:{CANDIDATE_PORT}",
                 "request_path": "/api/v1/quote",
+                "analysis_mode": "explorer",
             }
         )
         print("Live paired-service verification passed.")

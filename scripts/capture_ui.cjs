@@ -52,11 +52,11 @@ async function main() {
     const page = await browser.newPage({ viewport: { width: 1440, height: 1050 }, deviceScaleFactor: 1 });
     await page.goto('http://127.0.0.1:4173', { waitUntil: 'networkidle' });
     await page.screenshot({ path: path.join(output, 'releaseproof-home.png'), fullPage: true });
-    await page.getByRole('button', { name: /Run release proof/i }).click();
+    await page.getByRole('button', { name: /Run guarded proof/i }).click();
     await page.getByText('Release decision').waitFor({ timeout: 10000 });
     await page.screenshot({ path: path.join(output, 'releaseproof-result.png'), fullPage: true });
     await page.getByRole('radio', { name: /Response schema changed/i }).click();
-    await page.getByRole('button', { name: /Run release proof/i }).click();
+    await page.getByRole('button', { name: /Run guarded proof/i }).click();
     await page.waitForTimeout(2800);
     await page.getByText(/Required field 'total' is missing/i).waitFor({ timeout: 10000 });
     await page.screenshot({ path: path.join(output, 'releaseproof-contract-result.png'), fullPage: true });

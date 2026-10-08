@@ -15,6 +15,8 @@ from .adjudicator import adjudicate
 from .catalog import CATALOG
 from .models import (
     ChangeInput,
+    ExplorerAssertion,
+    ExplorerExperimentSpec,
     ExperimentEvidence,
     ExperimentId,
     ExperimentPlan,
@@ -27,6 +29,7 @@ from .scenarios import scenario_results
 LATENCY_REGRESSION_LIMIT = 0.30
 ERROR_RATE_INCREASE_LIMIT = 0.02
 LIVE_REQUEST_CAP = 100
+MISSING = object()
 
 
 def _p95(values: list[float]) -> float | None:
@@ -51,6 +54,28 @@ def _json_type(value: Any) -> str:
     if isinstance(value, dict):
         return "object"
     return "null"
+
+
+def _response_signature(value: Any, prefix: str = "$") -> dict[str, str]:
+    """Return a deterministic shape/type signature for nested JSON."""
+    signature = {prefix: _json_type(value)}
+    if isinstance(value, dict):
+        for key in sorted(value):
+            signature.update(_response_signature(value[key], f"{prefix}.{key}"))
+    elif isinstance(value, list):
+        for index, item in enumerate(value[:20]):
+            signature.update(_response_signature(item, f"{prefix}[{index}]"))
+    return signature
+
+
+def _response_value(body: Any, path: str) -> Any:
+    """Resolve a conservative dot path; list traversal is intentionally unsupported."""
+    current = body
+    for segment in path.removeprefix("$.").split("."):
+        if not segment or not isinstance(current, dict) or segment not in current:
+            return MISSING
+        current = current[segment]
+    return current
 
 
 def _side_from_profile(raw: dict[str, Any], warmups: int, trials: int) -> SideMeasurement:
@@ -124,6 +149,77 @@ def _evaluate(
         "max_p95_regression": LATENCY_REGRESSION_LIMIT,
         "max_error_rate_increase": ERROR_RATE_INCREASE_LIMIT,
     }
+
+
+def _evaluate_explorer(
+    spec: ExplorerExperimentSpec,
+    stable: SideMeasurement,
+    candidate: SideMeasurement,
+) -> tuple[bool | None, str, dict[str, float | int | str]]:
+    """Interpret an AI-authored spec using fixed, server-owned operators."""
+    if not stable.success:
+        return None, "Explorer could not establish a valid stable baseline.", {"decision": "review_only"}
+
+    findings: list[str] = []
+    assertions = set(spec.assertions)
+    # Availability and status parity are mandatory guardrails for every
+    # generated probe; the model cannot opt out by omitting an assertion.
+    if not candidate.success:
+        findings.append("candidate did not respond successfully")
+    if stable.response_status != candidate.response_status:
+        findings.append(
+            f"status changed from {stable.response_status} to {candidate.response_status}"
+        )
+
+    stable_signature = _response_signature(stable.response_sample)
+    candidate_signature = _response_signature(candidate.response_sample)
+    if ExplorerAssertion.RESPONSE_SHAPE_MATCH in assertions:
+        if set(stable_signature) != set(candidate_signature):
+            findings.append("response field shape differs from stable")
+    if ExplorerAssertion.RESPONSE_TYPES_MATCH in assertions:
+        shared = set(stable_signature) & set(candidate_signature)
+        changed_types = sorted(
+            path for path in shared if stable_signature[path] != candidate_signature[path]
+        )
+        if changed_types:
+            findings.append("response types changed at " + ", ".join(changed_types[:5]))
+
+    if ExplorerAssertion.REQUIRED_PATHS_PRESENT in assertions:
+        missing = [
+            path
+            for path in spec.required_response_paths
+            if _response_value(candidate.response_sample, path) is MISSING
+        ]
+        if missing:
+            findings.append("candidate is missing required paths: " + ", ".join(missing))
+
+    if ExplorerAssertion.COMPARE_PATHS in assertions:
+        changed = []
+        for path in spec.compare_response_paths:
+            stable_value = _response_value(stable.response_sample, path)
+            candidate_value = _response_value(candidate.response_sample, path)
+            if stable_value is MISSING or candidate_value is MISSING or stable_value != candidate_value:
+                changed.append(path)
+        if changed:
+            findings.append("selected invariant paths differ: " + ", ".join(changed))
+
+    if ExplorerAssertion.LATENCY_WITHIN_POLICY in assertions:
+        stable_latency = stable.p95_latency_ms
+        candidate_latency = candidate.p95_latency_ms
+        if stable_latency and candidate_latency:
+            regression = (candidate_latency - stable_latency) / stable_latency
+            if regression > LATENCY_REGRESSION_LIMIT:
+                findings.append(f"p95 latency regressed by {regression:.1%}")
+
+    thresholds: dict[str, float | int | str] = {
+        "decision": "review_only",
+        "execution": "fixed declarative DSL; no model-authored code",
+        "mandatory_assertions": "candidate_success,status_match",
+        "max_p95_regression": LATENCY_REGRESSION_LIMIT,
+    }
+    if findings:
+        return False, "Explorer finding: " + "; ".join(findings) + ". Human review required.", thresholds
+    return True, "The generated probe found no difference under its declared assertions.", thresholds
 
 
 async def _assert_safe_target(url: str) -> None:
@@ -200,6 +296,61 @@ async def _live_side(url: str, path: str, experiment_id: ExperimentId, warmups: 
         notes=[
             f"Bounded live HTTP probe for {experiment_id.value}; no arbitrary commands executed.",
             f"Executed {requests_per_trial} request(s) per trial.",
+        ],
+    )
+
+
+async def _live_explorer_side(
+    url: str,
+    path: str,
+    spec: ExplorerExperimentSpec,
+    warmups: int,
+    trials: int,
+) -> SideMeasurement:
+    """Execute only the constrained GET/query DSL against the already-approved target."""
+    await _assert_safe_target(url)
+    target = urljoin(url.rstrip("/") + "/", path.lstrip("/"))
+    latencies: list[float] = []
+    errors = 0
+    response_status: int | None = None
+    sample: Any = None
+    headers = {
+        "User-Agent": "ReleaseProof/0.1",
+        "X-ReleaseProof-Probe": ExperimentId.AI_EXPLORER.value,
+    }
+    async with httpx.AsyncClient(timeout=httpx.Timeout(8.0), follow_redirects=False) as client:
+        for _ in range(warmups):
+            try:
+                await client.get(target, params=spec.query_parameters, headers=headers)
+            except httpx.HTTPError:
+                pass
+        for _ in range(trials):
+            started = time.perf_counter()
+            try:
+                response = await client.get(target, params=spec.query_parameters, headers=headers)
+                latencies.append((time.perf_counter() - started) * 1000)
+                response_status = response.status_code
+                errors += int(not 200 <= response.status_code < 400)
+                try:
+                    sample = response.json()
+                except ValueError:
+                    sample = response.text[:500]
+            except httpx.HTTPError as exc:
+                latencies.append((time.perf_counter() - started) * 1000)
+                errors += 1
+                sample = type(exc).__name__
+    return SideMeasurement(
+        success=errors == 0,
+        trials_completed=trials,
+        warmups_completed=warmups,
+        requests=trials,
+        error_rate=round(errors / max(trials, 1), 4),
+        p95_latency_ms=_p95(latencies),
+        response_status=response_status,
+        response_sample=sample,
+        notes=[
+            "AI-authored declarative probe; fixed runner executed GET only.",
+            "No generated source code, headers, credentials, shell commands, or arbitrary target URL were accepted.",
         ],
     )
 
@@ -282,6 +433,80 @@ async def execute_plan(change: ChangeInput, plan: ExperimentPlan) -> list[Experi
             explanation=explanation,
             thresholds=thresholds,
             adjudication=adjudication,
+        ))
+
+    explorer_definition = CATALOG[ExperimentId.AI_EXPLORER]
+    for spec in plan.exploratory_experiments:
+        estimated = (change.budget.warmups + change.budget.trials) * 2
+        if total_requests + estimated > change.budget.max_requests:
+            inconclusive = SideMeasurement(
+                success=False,
+                trials_completed=0,
+                warmups_completed=0,
+                requests=0,
+                notes=["Request budget exhausted."],
+            )
+            evidence.append(ExperimentEvidence(
+                experiment_id=ExperimentId.AI_EXPLORER,
+                title=f"AI Explorer: {spec.name}",
+                blocking=False,
+                stable=inconclusive,
+                candidate=inconclusive,
+                passed=None,
+                explanation="Generated probe was not executed because the bounded request budget was exhausted.",
+                review_only=True,
+                exploratory_spec=spec,
+            ))
+            continue
+
+        profile = profiles.get(ExperimentId.AI_EXPLORER.value) if profiles is not None else None
+        if profiles is not None:
+            if profile is None:
+                inconclusive = SideMeasurement(
+                    success=False,
+                    trials_completed=0,
+                    warmups_completed=0,
+                    requests=0,
+                    notes=["Scenario has no AI Explorer fixture."],
+                )
+                evidence.append(ExperimentEvidence(
+                    experiment_id=ExperimentId.AI_EXPLORER,
+                    title=f"AI Explorer: {spec.name}",
+                    blocking=False,
+                    stable=inconclusive,
+                    candidate=inconclusive,
+                    passed=None,
+                    explanation="This prepared scenario has no evidence for the generated probe.",
+                    review_only=True,
+                    exploratory_spec=spec,
+                ))
+                continue
+            stable = _side_from_profile(profile["stable"], change.budget.warmups, change.budget.trials)
+            candidate = _side_from_profile(profile["candidate"], change.budget.warmups, change.budget.trials)
+        else:
+            stable, candidate = await asyncio.gather(
+                _live_explorer_side(
+                    str(change.stable_url), change.request_path, spec,
+                    change.budget.warmups, change.budget.trials,
+                ),
+                _live_explorer_side(
+                    str(change.candidate_url), change.request_path, spec,
+                    change.budget.warmups, change.budget.trials,
+                ),
+            )
+        total_requests += estimated
+        passed, explanation, thresholds = _evaluate_explorer(spec, stable, candidate)
+        evidence.append(ExperimentEvidence(
+            experiment_id=ExperimentId.AI_EXPLORER,
+            title=f"{explorer_definition.title}: {spec.name}",
+            blocking=False,
+            stable=stable,
+            candidate=candidate,
+            passed=passed,
+            explanation=explanation,
+            thresholds=thresholds,
+            review_only=True,
+            exploratory_spec=spec,
         ))
     return evidence
 

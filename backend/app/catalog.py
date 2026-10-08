@@ -66,9 +66,39 @@ CATALOG: dict[ExperimentId, ExperimentDefinition] = {
         default_trials=3,
         default_warmups=0,
     ),
+    ExperimentId.AI_EXPLORER: ExperimentDefinition(
+        id=ExperimentId.AI_EXPLORER,
+        title="AI Explorer probe",
+        purpose="Runs an AI-authored declarative probe inside fixed request and assertion boundaries.",
+        max_requests=20,
+        default_trials=3,
+        default_warmups=0,
+        blocking=False,
+    ),
 }
 
 
 BASELINE_IDS = (ExperimentId.HEALTH, ExperimentId.SMOKE)
-ADAPTIVE_IDS = tuple(experiment_id for experiment_id in CATALOG if experiment_id not in BASELINE_IDS)
+ADAPTIVE_IDS = tuple(
+    experiment_id
+    for experiment_id in CATALOG
+    if experiment_id not in (*BASELINE_IDS, ExperimentId.AI_EXPLORER)
+)
 
+
+# A transparent risk map, separate from the executable catalog.  Listing a
+# risk here does not pretend that the prototype already has evidence for it.
+RISK_TAXONOMY = [
+    {"id": "contract", "title": "Contract compatibility", "coverage": "implemented", "experiments": ["contract_compatibility"]},
+    {"id": "semantic", "title": "Business and semantic behaviour", "coverage": "partial", "experiments": ["api_smoke", "intent_reconciliation"]},
+    {"id": "input_boundaries", "title": "Boundary and malformed input", "coverage": "partial", "experiments": ["edge_inputs", "payload_size"]},
+    {"id": "authentication", "title": "Authentication and authorization", "coverage": "planned", "experiments": []},
+    {"id": "security", "title": "Security and information leakage", "coverage": "planned", "experiments": []},
+    {"id": "performance", "title": "Latency, load and resource pressure", "coverage": "implemented", "experiments": ["bounded_load"]},
+    {"id": "concurrency", "title": "Concurrency, retries and idempotency", "coverage": "partial", "experiments": ["bounded_load", "retry_idempotency"]},
+    {"id": "data_integrity", "title": "Database and data integrity", "coverage": "planned", "experiments": []},
+    {"id": "external_effects", "title": "Events, queues and external calls", "coverage": "planned", "experiments": []},
+    {"id": "dependency_resilience", "title": "Dependency failures and timeouts", "coverage": "partial", "experiments": ["dependency_timeout"]},
+    {"id": "rollback", "title": "Rollback and version interoperability", "coverage": "planned", "experiments": []},
+    {"id": "observability", "title": "Logs, metrics and error reporting", "coverage": "planned", "experiments": []},
+]

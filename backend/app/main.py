@@ -6,7 +6,7 @@ import os
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from .catalog import CATALOG
+from .catalog import CATALOG, RISK_TAXONOMY
 from .executor import determine_verdict, execute_plan
 from .ledger import JsonLedgerStore
 from .models import ChangeInput, EvidenceLedger, RunRecord, RunStatus, Verdict, utc_now
@@ -46,6 +46,12 @@ def catalog():
     return list(CATALOG.values())
 
 
+@app.get("/api/risk-classes")
+def risk_classes():
+    """Coverage map: implemented, partial and planned are deliberately distinct."""
+    return RISK_TAXONOMY
+
+
 @app.get("/api/scenarios")
 def scenarios():
     return scenario_summaries()
@@ -70,6 +76,11 @@ async def analyze(change: ChangeInput) -> RunRecord:
             verdict, reasons = determine_verdict(record.ledger.evidence)
             record.ledger.verdict = verdict
             record.ledger.verdict_reasons = reasons
+            record.ledger.review_findings = [
+                item.explanation
+                for item in record.ledger.evidence
+                if item.review_only and item.passed is False
+            ]
         except TimeoutError:
             record.ledger.verdict = Verdict.INCONCLUSIVE
             record.ledger.verdict_reasons = [

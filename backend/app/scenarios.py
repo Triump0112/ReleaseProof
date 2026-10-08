@@ -34,6 +34,10 @@ SCENARIO_PROFILES: dict[str, dict[str, Any]] = {
                 "stable": {"status": 200, "latencies": [171, 180, 185], "errors": 1, "requests": 480, "body": {"status": "ok"}},
                 "candidate": {"status": 200, "latencies": [560, 590, 615], "errors": 19, "requests": 480, "body": {"status": "degraded"}},
             },
+            "ai_explorer": {
+                "stable": {"status": 200, "latencies": [80, 84, 82], "errors": 0, "body": {"total": 499, "currency": "INR"}},
+                "candidate": {"status": 200, "latencies": [82, 86, 84], "errors": 0, "body": {"total": 499, "currency": "INR"}},
+            },
         },
     },
     "api-contract-break": {
@@ -63,6 +67,10 @@ SCENARIO_PROFILES: dict[str, dict[str, Any]] = {
             "contract_compatibility": {
                 "stable": {"status": 200, "latencies": [70, 73, 71], "errors": 0, "body": {"total": 499, "currency": "INR"}},
                 "candidate": {"status": 200, "latencies": [72, 75, 73], "errors": 0, "body": {"amount": "499", "currency": "INR"}},
+            },
+            "ai_explorer": {
+                "stable": {"status": 200, "latencies": [71, 74, 72], "errors": 0, "body": {"total": 499, "currency": "INR"}},
+                "candidate": {"status": 200, "latencies": [73, 76, 74], "errors": 0, "body": {"amount": "499", "currency": "INR"}},
             },
         },
     },
@@ -123,6 +131,16 @@ SCENARIO_PROFILES: dict[str, dict[str, Any]] = {
                     },
                 },
             },
+            "ai_explorer": {
+                "stable": {
+                    "status": 200, "latencies": [68, 71, 70], "errors": 0,
+                    "body": {"total": 499.0, "currency": "INR", "tax_rate": 0.0, "discount_applied": 0.0},
+                },
+                "candidate": {
+                    "status": 200, "latencies": [69, 72, 71], "errors": 0,
+                    "body": {"total": 500.5, "currency": "INR", "tax_rate": 0.18, "discount_applied": 0.15},
+                },
+            },
         },
     },
     "healthy-release": {
@@ -153,6 +171,10 @@ SCENARIO_PROFILES: dict[str, dict[str, Any]] = {
                 "candidate": {"status": 200, "latencies": [76, 79, 77], "errors": 0, "body": {"items": [1, 2]}},
             },
             "edge_inputs": {
+                "stable": {"status": 200, "latencies": [82, 85, 84], "errors": 0, "body": {"items": []}},
+                "candidate": {"status": 200, "latencies": [83, 86, 85], "errors": 0, "body": {"items": []}},
+            },
+            "ai_explorer": {
                 "stable": {"status": 200, "latencies": [82, 85, 84], "errors": 0, "body": {"items": []}},
                 "candidate": {"status": 200, "latencies": [83, 86, 85], "errors": 0, "body": {"items": []}},
             },
