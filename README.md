@@ -1,126 +1,162 @@
 # ReleaseProof
 
-ReleaseProof is a pre-traffic differential release gate for Cloud Run. It reads a code or configuration change, selects a bounded change-relevant experiment, compares a stable revision with a zero-traffic candidate, and produces a deterministic `PASS`, `BLOCK`, or `INCONCLUSIVE` verdict with replayable evidence.
+**Every automated deployment gate in production use today needs real users to be exposed to the candidate first.** Canary analysis, progressive delivery, and telemetry-based rollback all begin working *after* traffic reaches the new revision. ReleaseProof decides before a single real request does.
 
-The prototype demonstrates two regressions that ordinary health checks miss:
+It reads a change, probes a zero-traffic Cloud Run candidate against the current stable revision with identical requests, and returns a deterministic `PASS`, `BLOCK`, or `INCONCLUSIVE` with replayable evidence.
 
-1. A concurrency change that causes repeatable candidate tail-latency degradation.
-2. An API response change that removes a required field and changes its type.
-
-The one-page project abstract is in [`output/pdf/ReleaseProof_Abstract.pdf`](output/pdf/ReleaseProof_Abstract.pdf).
-
-## Core principle
-
-Gemini may interpret the change, form a falsifiable hypothesis, and select experiments from an allowlisted catalog. It cannot set release thresholds, fabricate measurements, execute arbitrary commands, or override the verdict. The experiment runner and policy evaluator remain deterministic.
-
-## Architecture
-
-```text
-React/Firebase-ready UI
-        |
-        v
-Cloud Run FastAPI orchestrator
-        |---- Vertex AI Gemini planner (optional locally)
-        |---- bounded paired HTTP experiment runner
-        |---- deterministic policy evaluator
-        `---- JSON evidence ledger (Firestore-ready)
-                    |
-                    +---- stable Cloud Run revision
-                    `---- tagged candidate revision, 0% traffic
+```
+AI plans the investigation and explains the evidence.
+Measured evidence makes the release decision.
 ```
 
-## Run the complete live prototype
+## What it catches that a passing test suite does not
 
-Docker Compose launches the frontend, API, and four controlled stable/candidate targets. In this mode the backend sends real paired HTTP probes; it does not use fixture measurements.
+| Scenario | Candidate behaviour | What conventional checks report |
+|---|---|---|
+| Concurrency regression | Tail latency collapses only when requests overlap | Health 200, smoke 200, single requests fast |
+| API contract break | Required field renamed, number becomes string | Health 200, smoke 200, endpoint available |
+| **Undeclared side effect** | Declared tax change applied **plus** an undeclared 15% discount | Health 200, smoke 200, identical shape, identical types, flat latency |
+
+The third case is the one no shape-based check can reach. The response keeps every field name, every type, its status code and its latency profile. The only way to catch it is to reconcile what the candidate *actually does* against what its change *said it would do*.
+
+## How the decision is made
+
+```text
+         change (summary + diff)
+                  |
+    ┌─────────────┴─────────────┐
+    │  Gemini: risk hypothesis  │   plans, never decides
+    │  + bounded experiment plan│
+    └─────────────┬─────────────┘
+                  |
+      identical paired probes
+      ┌───────────┴───────────┐
+   stable revision      candidate revision (0% traffic)
+      └───────────┬───────────┘
+                  |
+    ┌─────────────┴──────────────┐
+    │ deterministic delta extract│   no model involved
+    └─────────────┬──────────────┘
+                  |
+    ┌─────────────┴──────────────┐
+    │ Gemini: explained / noise /│   classifies, must cite the diff
+    │          unexplained       │
+    └─────────────┬──────────────┘
+                  |
+    ┌─────────────┴──────────────┐
+    │ fixed policy → PASS/BLOCK  │   owns the verdict
+    └─────────────┬──────────────┘
+                  |
+          evidence ledger
+```
+
+**Gemini may** interpret the change, choose allowlisted experiments, classify an observed difference, and explain the evidence.
+**Gemini may not** invent a measurement, issue arbitrary requests, choose a threshold, suppress a failed result, or override the verdict.
+
+Classification requires a citation. A delta the model calls "explained" without quoting supporting diff evidence is downgraded to *unexplained*, and a delta it fails to classify at all is treated as *unexplained*. The failure direction is a blocked release, never a silently shipped regression. With Vertex disabled the system still runs, using a deliberately conservative offline classifier.
+
+## Intent reconciliation
+
+For every release, the orchestrator enumerates field-level differences between the paired responses deterministically, then asks Gemini to account for each one:
+
+| Field | Stable | Candidate | Assessment |
+|---|---|---|---|
+| `total` | `499.0` | `500.5` | Declared — diff adds `tax_rate = 0.18` |
+| `tax_rate` | `0.0` | `0.18` | Declared — diff adds `tax_rate = 0.18` |
+| `quote_id` | `7f3a9c21…` | `c08e55a1…` | Non-deterministic — differs between any two calls |
+| `issued_at` | `09:14:02` | `09:14:05` | Non-deterministic — differs between any two calls |
+| **`discount_applied`** | **`0.0`** | **`0.15`** | **Undeclared — nothing in the change mentions discounts** |
+
+`BLOCK`. Note that the net total still looks plausible: the declared tax raises it, the undeclared discount lowers it, and the result lands within two rupees of the original. That is precisely why code review and threshold alerts miss this class of bug.
+
+Distinguishing a real regression from ordinary non-determinism is the hard part of differential testing — Twitter's Diffy needed a third live instance to subtract noise. Here it is a language problem, which is what makes it a good fit for a model rather than a heuristic.
+
+## Run it
+
+### Deployed (Cloud Run)
+
+No local Docker required; builds happen in Cloud Build. Runs as-is from Cloud Shell.
 
 ```bash
-cd /Users/sdivyam/ReleaseProof
+./scripts/deploy_cloud_run.sh YOUR_PROJECT_ID asia-south1
+```
+
+Deploys six services — four demo revisions, the orchestrator, and the UI — discovering and wiring revision URLs automatically. Vertex AI planning is enabled, and probing of private addresses is disabled. The script prints the UI URL when it finishes.
+
+Verify the deployment actually blocks a bad candidate:
+
+```bash
+./scripts/smoke_deployed.sh "$API_URL" "$STABLE_URL" "$CANDIDATE_URL"
+```
+
+### Locally (Docker Compose)
+
+```bash
 cp .env.example .env
 docker compose up --build
 ```
 
-Open `http://localhost:3000` and run both prepared changes. The API is also available at `http://localhost:8000/docs`.
+Open `http://localhost:3000`; API docs at `http://localhost:8000/docs`. This path sends **real paired HTTP probes** to the demo revisions — it does not replay fixtures. Set `RELEASEPROOF_USE_VERTEX=true` with Application Default Credentials to enable Gemini; otherwise the offline planner and classifier are used.
 
-The local stack defaults to the deterministic planner so it runs without cloud credentials. To enable Gemini, set `RELEASEPROOF_USE_VERTEX=true`, configure the Google Cloud variables, and provide Application Default Credentials to the backend environment. For a Cloud Run deployment, use a minimally privileged service account with Vertex AI access.
-
-## Run without Docker
-
-### API
+### Without Docker
 
 ```bash
-cd backend
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements-dev.txt
-uvicorn app.main:app --reload --port 8000
+cd backend && python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements-dev.txt && uvicorn app.main:app --reload --port 8000
+
+cd frontend && npm install && npm run dev
 ```
 
-### Frontend
+Without `VITE_USE_LIVE_TARGETS=true` the API serves repeatable fixtures, which is useful for UI work. Compose is the real paired-service path.
 
-```bash
-cd frontend
-npm install
-npm run dev
-```
+## API
 
-The Vite development server proxies `/api` to port 8000. Without `VITE_USE_LIVE_TARGETS=true`, the API uses repeatable demonstration fixtures. This is useful for UI development; the Compose workflow is the real paired-service path.
+- `GET  /health` — service health
+- `GET  /api/catalog` — bounded experiment catalog
+- `GET  /api/scenarios` — demonstration fixtures
+- `POST /api/analyze` — plan, execute, and decide
+- `GET  /api/runs/{id}` — immutable run record
 
-### Demo targets
-
-The services can be started individually from `demo-services` using the same image with different environment variables:
-
-```bash
-ROLE=stable SCENARIO=latency uvicorn app.main:app --port 8101
-ROLE=candidate SCENARIO=latency uvicorn app.main:app --port 8102
-```
-
-See [`demo-services/README.md`](demo-services/README.md) for all four variants.
-
-## API surface
-
-- `GET /health` - service health
-- `GET /api/catalog` - bounded experiment catalog
-- `GET /api/scenarios` - deterministic UI/demo fixtures
-- `POST /api/analyze` - plan and execute a release proof
-- `GET /api/runs/{id}` - retrieve the immutable run record
-
-The baseline always includes availability and a smoke probe. Gemini or the local fallback may add no more than two adaptive experiments within the configured request and time budgets.
+Health and smoke always execute. Intent reconciliation runs on the smoke baseline, so every release is checked for undeclared behaviour even when the planner selects no adaptive experiment. Gemini may add at most two adaptive experiments within the request and time budget.
 
 ## Verification
 
 ```bash
-cd backend && python -m pytest
-cd demo-services && python -m pytest
-cd frontend && npm run build
+cd backend       && python -m pytest        # 18 tests
+cd demo-services && python -m pytest        # 13 tests
+cd frontend      && npm run build
+python scripts/verify_live_stack.py         # real HTTP, all three scenarios
 ```
 
-Current verification status:
+`verify_live_stack.py` starts genuine stable/candidate processes and requires all three releases to be blocked from live measurements — including correct handling of the randomly generated `quote_id` and `issued_at` values, which must not be mistaken for regressions.
 
-- Backend: 8 tests passing
-- Demo services: 8 tests passing
-- Frontend: production build passing
-- PDF: one A4 page, rendered and visually inspected
+## How this relates to existing tools
 
-For a real HTTP end-to-end check without Docker, run the script with an environment containing the backend requirements:
+ReleaseProof does not claim deployment verification is an unsolved problem. Cloud Deploy already supports verification jobs, canary phases, and rollback. The contribution is narrower and stated plainly:
 
-```bash
-backend/.venv/bin/python scripts/verify_live_stack.py
-```
+| | Established tooling | ReleaseProof |
+|---|---|---|
+| Kayenta, Flagger, Argo Rollouts | Statistical baseline-vs-canary analysis **after traffic** | Decides **before** traffic |
+| Diffy, GoReplay | Response diffing, but driven by **captured real traffic** | Synthetic probes, works on a **zero-traffic** candidate |
+| Pact, oasdiff, Schemathesis | **Spec-level** breaking-change detection | **Runtime** behaviour of the deployed candidate |
+| CloudBees Smart Tests | LLM picks which **existing tests** to run | LLM reconciles **observed behaviour** against declared intent |
 
-It launches local stable/candidate processes, verifies both adaptive experiment choices, and requires both releases to be blocked from measured live evidence.
+The long-term shape of this is a Cloud Deploy verification task, not a replacement for Cloud Deploy.
+
+## Prototype boundaries
+
+A hackathon prototype, not a production release controller. The experiment catalog and thresholds are intentionally narrow. Targets are restricted to HTTP(S), execution is request-bounded, and private targets are disabled unless explicitly enabled for the local Compose network. Latency comparisons use a small number of trials and are reported as observed deltas rather than statistically significant ones. Production use would additionally need authenticated revision discovery, Firestore-backed immutable evidence, Cloud Logging and Monitoring integration, stronger statistical policies, and organization-specific calibration.
 
 ## Repository map
 
 ```text
 ReleaseProof/
-├── backend/           FastAPI planner, runner, evaluator, and evidence API
-├── frontend/          React/Vite demonstration dashboard
-├── demo-services/     Controlled stable and candidate HTTP revisions
-├── docs/              Architecture, demo script, and PDF source
-├── output/pdf/        Final one-page abstract
-└── docker-compose.yml Complete local live stack
+├── backend/app/adjudicator.py   intent reconciliation (deltas → classification → policy)
+├── backend/app/planner.py       Gemini experiment planning, schema-constrained
+├── backend/app/executor.py      bounded paired HTTP runner + deterministic evaluator
+├── backend/app/ledger.py        replayable evidence records
+├── frontend/                    React dashboard
+├── demo-services/               controlled stable/candidate revisions
+├── scripts/deploy_cloud_run.sh  one-command deployment
+└── scripts/verify_live_stack.py real-HTTP end-to-end verification
 ```
-
-## Prototype boundaries
-
-This is a hackathon prototype, not a production release controller. Its experiment catalog and thresholds are intentionally narrow. Live targets are restricted to HTTP(S), execution is request-bounded, and private targets are disabled unless explicitly enabled for the local Compose network. Production deployment would additionally require authenticated revision URLs, Firestore-backed immutable evidence, Cloud Logging/Monitoring integration, stronger statistical policies, and organization-specific release controls.
