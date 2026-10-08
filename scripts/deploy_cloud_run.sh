@@ -47,6 +47,26 @@ gcloud services enable \
   aiplatform.googleapis.com \
   --project "${PROJECT}" >/dev/null
 
+# New projects no longer grant the default compute service account the roles
+# Cloud Build needs, so `run deploy --source` fails with PERMISSION_DENIED on
+# the source bucket. Grant them here, and grant Vertex access in the same pass
+# so the planner does not silently fall back after a long deploy.
+PROJECT_NUMBER="$(gcloud projects describe "${PROJECT}" --format='value(projectNumber)')"
+BUILD_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+
+echo "==> Granting build and Vertex roles to ${BUILD_SA} (idempotent)"
+for role in roles/cloudbuild.builds.builder roles/aiplatform.user; do
+  gcloud projects add-iam-policy-binding "${PROJECT}" \
+    --member="serviceAccount:${BUILD_SA}" \
+    --role="${role}" \
+    --condition=None \
+    --quiet >/dev/null
+done
+
+# IAM is eventually consistent; a build started immediately can still be denied.
+echo "==> Waiting for IAM propagation"
+sleep 30
+
 # ---------------------------------------------------------------------------
 # 1. Demo revisions. Public so the orchestrator can probe them over HTTPS;
 #    they serve only synthetic demo data.
