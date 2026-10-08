@@ -1,5 +1,7 @@
 # ReleaseProof
 
+### ▶ [Live demo](https://releaseproof-ui-owsl25a4sa-el.a.run.app) · running on Cloud Run with Gemini on Vertex AI
+
 **Every automated deployment gate in production use today needs real users to be exposed to the candidate first.** Canary analysis, progressive delivery, and telemetry-based rollback all begin working *after* traffic reaches the new revision. ReleaseProof decides before a single real request does.
 
 It reads a change, probes a zero-traffic Cloud Run candidate against the current stable revision with identical requests, and returns a deterministic `PASS`, `BLOCK`, or `INCONCLUSIVE` with replayable evidence.
@@ -80,6 +82,27 @@ For every release, the orchestrator enumerates field-level differences between t
 
 Distinguishing a real regression from ordinary non-determinism is the hard part of differential testing — Twitter's Diffy needed a third live instance to subtract noise. Here it is a language problem, which is what makes it a good fit for a model rather than a heuristic.
 
+## What is deployed, and what is only scaffolding
+
+The demo runs ten Cloud Run services, and they are not all the same kind of thing.
+
+**ReleaseProof itself is two services:** the dashboard and the orchestrator API. The API calls Gemini on Vertex AI — no model is self-hosted.
+
+**The other eight are the application under test**, not part of the product: four stable/candidate pairs, one per scenario, each candidate carrying a single planted regression. They exist so the demo has something to point at and a bug that is guaranteed to be there every run.
+
+```
+          releaseproof-ui ──► releaseproof-api ──► Vertex AI (Gemini)
+                                     │              plans the investigation
+                                     │
+                         identical paired probes
+                         ┌───────────┴───────────┐
+                         ▼                       ▼
+                 stable revision         candidate revision
+               (serving production)        (0% traffic)
+```
+
+In real use those eight disappear. A team deploys the two ReleaseProof services once and points them at their own revisions — their live service and their tagged candidate holding zero traffic. That is what the `stable_url` and `candidate_url` fields on `/api/analyze` are for; the demo simply pre-fills them.
+
 ## Run it
 
 ### Deployed (Cloud Run)
@@ -90,7 +113,9 @@ No local Docker required; builds happen in Cloud Build. Runs as-is from Cloud Sh
 ./scripts/deploy_cloud_run.sh YOUR_PROJECT_ID asia-south1
 ```
 
-Deploys six services — four demo revisions, the orchestrator, and the UI — discovering and wiring revision URLs automatically. Vertex AI planning is enabled, and probing of private addresses is disabled. The script prints the UI URL when it finishes.
+Deploys all ten services, discovering and wiring revision URLs automatically. Vertex AI planning is enabled, probing of private addresses is disabled, and everything scales to zero so an idle deployment costs nothing. The script prints the UI URL when it finishes.
+
+Set `MIN_INSTANCES=1` to pin instances warm while recording a demo, and `./scripts/teardown_cloud_run.sh` removes the whole stack afterwards.
 
 Verify the deployment actually blocks a bad candidate:
 
@@ -132,13 +157,19 @@ Health and smoke always execute. Intent reconciliation runs on the smoke baselin
 ## Verification
 
 ```bash
-cd backend       && python -m pytest        # 23 tests
-cd demo-services && python -m pytest        # 13 tests
+cd backend       && python -m pytest        # 54 tests
+cd demo-services && python -m pytest        # 24 tests
 cd frontend      && npm run build
-python scripts/verify_live_stack.py         # real HTTP, all three scenarios
+python scripts/verify_live_stack.py         # real HTTP, all four scenarios
 ```
 
-`verify_live_stack.py` starts genuine stable/candidate processes and requires all three releases to be blocked from live measurements — including correct handling of the randomly generated `quote_id` and `issued_at` values, which must not be mistaken for regressions.
+`verify_live_stack.py` starts genuine stable/candidate processes and checks the properties the demo's claims depend on:
+
+- Scenarios claiming a baseline blind spot must show health and smoke **passing**. A regression ordinary verification would have caught demonstrates nothing, so that fails the check rather than quietly weakening the story.
+- Randomly generated `quote_id` and `issued_at` values must not be mistaken for regressions.
+- The same change run through both modes must genuinely disagree — guarded finding nothing, explorer surfacing the difference.
+
+The generated-probe tests are mutation-verified: making the runner discard the model's authored input fails them. Without that, a stored fixture that merely happens to differ would make a probe look effective even if its inputs were ignored.
 
 ## How this relates to existing tools
 
