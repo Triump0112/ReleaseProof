@@ -4,9 +4,11 @@
 # Builds from source with Cloud Build, so no local Docker is required.
 # Runs fine from Cloud Shell, where gcloud and credentials already exist.
 #
-#   ./scripts/deploy_cloud_run.sh YOUR_PROJECT_ID [REGION]
+#   ./scripts/deploy_cloud_run.sh [PROJECT_ID] [REGION]
 #
-# Deploys six services: four demo revisions (stable/candidate x latency/contract),
+# Scales to zero by default. MIN_INSTANCES=1 removes cold starts for recording.
+#
+# Deploys ten services: eight demo revisions (stable/candidate x four scenarios),
 # the orchestrator API, and the UI. Demo URLs are discovered and injected
 # automatically, so nothing needs editing by hand.
 
@@ -18,6 +20,13 @@ GEMINI_MODEL="${RELEASEPROOF_GEMINI_MODEL:-gemini-2.5-flash}"
 # Vertex location is deliberately separate from the Cloud Run region: not every
 # region serves Gemini. Override only if you know your region has the model.
 VERTEX_LOCATION="${GOOGLE_CLOUD_LOCATION:-us-central1}"
+
+# Scale to zero by default so an idle deployment costs nothing; Cloud Run bills
+# pinned instances continuously, which free-tier usage does not cover.
+# Probes issue warmups before measuring, so a cold start does not land in the
+# latency comparison. Set MIN_INSTANCES=1 shortly before recording a demo to
+# remove cold-start delay, then redeploy at 0 afterwards.
+MIN_INSTANCES="${MIN_INSTANCES:-0}"
 
 if [[ -z "${PROJECT}" || "${PROJECT}" == "(unset)" ]]; then
   echo "ERROR: no project. Usage: $0 PROJECT_ID [REGION]" >&2
@@ -52,7 +61,7 @@ deploy_demo() {
     --allow-unauthenticated \
     --set-env-vars "ROLE=${role},SCENARIO=${scenario}" \
     --cpu 1 --memory 512Mi \
-    --min-instances 1 \
+    --min-instances "${MIN_INSTANCES}" \
     --max-instances 4 \
     --quiet >/dev/null
 }
@@ -95,7 +104,7 @@ gcloud run deploy releaseproof-api \
   --set-env-vars "^@^RELEASEPROOF_USE_VERTEX=true@GOOGLE_CLOUD_PROJECT=${PROJECT}@GOOGLE_CLOUD_LOCATION=${VERTEX_LOCATION}@RELEASEPROOF_GEMINI_MODEL=${GEMINI_MODEL}@RELEASEPROOF_ALLOW_PRIVATE_TARGETS=false@RELEASEPROOF_STABLE_LATENCY_URL=${STABLE_LATENCY_URL}@RELEASEPROOF_CANDIDATE_LATENCY_URL=${CANDIDATE_LATENCY_URL}@RELEASEPROOF_STABLE_CONTRACT_URL=${STABLE_CONTRACT_URL}@RELEASEPROOF_CANDIDATE_CONTRACT_URL=${CANDIDATE_CONTRACT_URL}@RELEASEPROOF_STABLE_SIDEEFFECT_URL=${STABLE_SIDEEFFECT_URL}@RELEASEPROOF_CANDIDATE_SIDEEFFECT_URL=${CANDIDATE_SIDEEFFECT_URL}@RELEASEPROOF_STABLE_MONEY_URL=${STABLE_MONEY_URL}@RELEASEPROOF_CANDIDATE_MONEY_URL=${CANDIDATE_MONEY_URL}" \
   --cpu 2 --memory 1Gi \
   --timeout 300 \
-  --min-instances 1 \
+  --min-instances "${MIN_INSTANCES}" \
   --max-instances 4 \
   --quiet >/dev/null
 
@@ -115,7 +124,7 @@ gcloud run deploy releaseproof-ui \
   --allow-unauthenticated \
   --set-env-vars "BACKEND_ORIGIN=${API_URL}" \
   --cpu 1 --memory 512Mi \
-  --min-instances 1 \
+  --min-instances "${MIN_INSTANCES}" \
   --quiet >/dev/null
 
 UI_URL="$(url_of releaseproof-ui)"
