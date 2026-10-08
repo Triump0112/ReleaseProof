@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 const scenarios = {
   concurrency: {
@@ -163,31 +163,11 @@ const scenarios = {
   },
 };
 
-const liveTargetsEnabled = import.meta.env.VITE_USE_LIVE_TARGETS === 'true';
-
-// Compose uses service hostnames; Cloud Run injects public revision URLs at build time.
-const TARGET_URLS = {
-  concurrency: {
-    stable: import.meta.env.VITE_STABLE_LATENCY_URL || 'http://stable-latency:8080',
-    candidate: import.meta.env.VITE_CANDIDATE_LATENCY_URL || 'http://candidate-latency:8080',
-  },
-  contract: {
-    stable: import.meta.env.VITE_STABLE_CONTRACT_URL || 'http://stable-contract:8080',
-    candidate: import.meta.env.VITE_CANDIDATE_CONTRACT_URL || 'http://candidate-contract:8080',
-  },
-  sideeffect: {
-    stable: import.meta.env.VITE_STABLE_SIDEEFFECT_URL || 'http://stable-sideeffect:8080',
-    candidate: import.meta.env.VITE_CANDIDATE_SIDEEFFECT_URL || 'http://candidate-sideeffect:8080',
-  },
-  currency: {
-    stable: import.meta.env.VITE_STABLE_MONEY_URL || 'http://stable-money:8080',
-    candidate: import.meta.env.VITE_CANDIDATE_MONEY_URL || 'http://candidate-money:8080',
-  },
-};
-
-function analysisPayload(scenario, mode) {
-  if (!liveTargetsEnabled) return { ...scenario.apiPayload, analysis_mode: mode };
-  const targets = TARGET_URLS[scenario.id];
+// Revision URLs come from the API at runtime rather than from the bundle, so a
+// single UI image works in Compose and on Cloud Run. When the API reports no
+// configured pair, the prepared fixtures are used instead.
+function analysisPayload(scenario, mode, liveTargets) {
+  const targets = liveTargets?.[scenario.id];
   if (!targets) return { ...scenario.apiPayload, analysis_mode: mode };
   return {
     ...scenario.apiPayload,
@@ -527,6 +507,11 @@ function normalizeApiResult(payload) {
   return body;
 }
 
+// The backend's own execution budget is 90s; allow for that plus Cloud Run
+// cold start rather than racing it. Aborting early would silently downgrade a
+// real paired run to the prepared fixtures.
+const ANALYSIS_TIMEOUT_MS = 120000;
+
 export default function App() {
   const [scenarioId, setScenarioId] = useState('concurrency');
   const [phase, setPhase] = useState('ready');
@@ -534,7 +519,17 @@ export default function App() {
   const [isDemo, setIsDemo] = useState(false);
   const [error, setError] = useState('');
   const [mode, setMode] = useState('guarded');
+  const [liveTargets, setLiveTargets] = useState(null);
   const scenario = useMemo(() => scenarios[scenarioId], [scenarioId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/demo-targets')
+      .then((response) => (response.ok ? response.json() : null))
+      .then((config) => { if (!cancelled && config?.live) setLiveTargets(config.targets); })
+      .catch(() => { /* No configured revisions: prepared fixtures are used. */ });
+    return () => { cancelled = true; };
+  }, []);
 
   const selectScenario = (id) => {
     setScenarioId(id);
@@ -552,11 +547,11 @@ export default function App() {
     const started = Date.now();
     try {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 6000);
+      const timeout = setTimeout(() => controller.abort(), ANALYSIS_TIMEOUT_MS);
       const response = await fetch('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(analysisPayload(scenario, mode)),
+        body: JSON.stringify(analysisPayload(scenario, mode, liveTargets)),
         signal: controller.signal,
       });
       clearTimeout(timeout);

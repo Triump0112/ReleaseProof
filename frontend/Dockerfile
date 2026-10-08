@@ -1,18 +1,8 @@
 FROM node:22-alpine AS build
 WORKDIR /app
 
-# Vite inlines VITE_* at build time, so revision URLs must be present here.
-ARG VITE_USE_LIVE_TARGETS=false
-ARG VITE_STABLE_LATENCY_URL=""
-ARG VITE_CANDIDATE_LATENCY_URL=""
-ARG VITE_STABLE_CONTRACT_URL=""
-ARG VITE_CANDIDATE_CONTRACT_URL=""
-ENV VITE_USE_LIVE_TARGETS=${VITE_USE_LIVE_TARGETS} \
-    VITE_STABLE_LATENCY_URL=${VITE_STABLE_LATENCY_URL} \
-    VITE_CANDIDATE_LATENCY_URL=${VITE_CANDIDATE_LATENCY_URL} \
-    VITE_STABLE_CONTRACT_URL=${VITE_STABLE_CONTRACT_URL} \
-    VITE_CANDIDATE_CONTRACT_URL=${VITE_CANDIDATE_CONTRACT_URL}
-
+# No build arguments by design. Revision URLs are runtime configuration served
+# by the API, so one image is valid in Compose and on Cloud Run alike.
 COPY package.json ./
 RUN npm install
 COPY . .

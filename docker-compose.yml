@@ -8,6 +8,15 @@ services:
       GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT:-}
       GOOGLE_CLOUD_LOCATION: ${GOOGLE_CLOUD_LOCATION:-us-central1}
       RELEASEPROOF_GEMINI_MODEL: ${RELEASEPROOF_GEMINI_MODEL:-gemini-2.5-flash}
+      # Demo revision URLs are runtime config, served to the UI by /api/demo-targets.
+      RELEASEPROOF_STABLE_LATENCY_URL: http://stable-latency:8080
+      RELEASEPROOF_CANDIDATE_LATENCY_URL: http://candidate-latency:8080
+      RELEASEPROOF_STABLE_CONTRACT_URL: http://stable-contract:8080
+      RELEASEPROOF_CANDIDATE_CONTRACT_URL: http://candidate-contract:8080
+      RELEASEPROOF_STABLE_SIDEEFFECT_URL: http://stable-sideeffect:8080
+      RELEASEPROOF_CANDIDATE_SIDEEFFECT_URL: http://candidate-sideeffect:8080
+      RELEASEPROOF_STABLE_MONEY_URL: http://stable-money:8080
+      RELEASEPROOF_CANDIDATE_MONEY_URL: http://candidate-money:8080
     ports:
       - "8000:8080"
     volumes:
@@ -33,8 +42,6 @@ services:
   frontend:
     build:
       context: ./frontend
-      args:
-        VITE_USE_LIVE_TARGETS: "true"
     environment:
       BACKEND_ORIGIN: "http://backend:8080"
     ports:

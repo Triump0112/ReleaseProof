@@ -52,6 +52,34 @@ def risk_classes():
     return RISK_TAXONOMY
 
 
+#: UI scenario id -> the pair of environment variables naming its revisions.
+_DEMO_TARGET_ENV = {
+    "concurrency": ("RELEASEPROOF_STABLE_LATENCY_URL", "RELEASEPROOF_CANDIDATE_LATENCY_URL"),
+    "contract": ("RELEASEPROOF_STABLE_CONTRACT_URL", "RELEASEPROOF_CANDIDATE_CONTRACT_URL"),
+    "sideeffect": ("RELEASEPROOF_STABLE_SIDEEFFECT_URL", "RELEASEPROOF_CANDIDATE_SIDEEFFECT_URL"),
+    "currency": ("RELEASEPROOF_STABLE_MONEY_URL", "RELEASEPROOF_CANDIDATE_MONEY_URL"),
+}
+
+
+@app.get("/api/demo-targets")
+def demo_targets():
+    """Revision URLs for the prepared scenarios, resolved at runtime.
+
+    Deliberately not baked into the UI bundle: the frontend builds from a
+    Dockerfile, and build-time variables do not reliably reach a Docker build.
+    Reading them here means one image works in Compose and on Cloud Run, and a
+    URL change is a redeploy of this service rather than a rebuild of the UI.
+    """
+    targets: dict[str, dict[str, str]] = {}
+    for scenario_id, (stable_var, candidate_var) in _DEMO_TARGET_ENV.items():
+        stable, candidate = os.getenv(stable_var, ""), os.getenv(candidate_var, "")
+        # Only advertise a pair when both sides are configured; a half-configured
+        # scenario would otherwise fail mid-run with a confusing error.
+        if stable and candidate:
+            targets[scenario_id] = {"stable": stable, "candidate": candidate}
+    return {"live": bool(targets), "targets": targets}
+
+
 @app.get("/api/scenarios")
 def scenarios():
     return scenario_summaries()

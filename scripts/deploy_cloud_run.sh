@@ -84,12 +84,15 @@ CANDIDATE_MONEY_URL="$(url_of releaseproof-candidate-money)"
 #    the runner cannot be pointed at internal addresses.
 # ---------------------------------------------------------------------------
 echo "==> Deploying orchestrator API"
+# Revision URLs are runtime configuration on this service, and the UI reads them
+# from /api/demo-targets. Keeping them out of the UI build means the frontend
+# image does not depend on build arguments reaching a Docker build.
 gcloud run deploy releaseproof-api \
   --source ./backend \
   --region "${REGION}" \
   --platform managed \
   --allow-unauthenticated \
-  --set-env-vars "RELEASEPROOF_USE_VERTEX=true,GOOGLE_CLOUD_PROJECT=${PROJECT},GOOGLE_CLOUD_LOCATION=${VERTEX_LOCATION},RELEASEPROOF_GEMINI_MODEL=${GEMINI_MODEL},RELEASEPROOF_ALLOW_PRIVATE_TARGETS=false" \
+  --set-env-vars "^@^RELEASEPROOF_USE_VERTEX=true@GOOGLE_CLOUD_PROJECT=${PROJECT}@GOOGLE_CLOUD_LOCATION=${VERTEX_LOCATION}@RELEASEPROOF_GEMINI_MODEL=${GEMINI_MODEL}@RELEASEPROOF_ALLOW_PRIVATE_TARGETS=false@RELEASEPROOF_STABLE_LATENCY_URL=${STABLE_LATENCY_URL}@RELEASEPROOF_CANDIDATE_LATENCY_URL=${CANDIDATE_LATENCY_URL}@RELEASEPROOF_STABLE_CONTRACT_URL=${STABLE_CONTRACT_URL}@RELEASEPROOF_CANDIDATE_CONTRACT_URL=${CANDIDATE_CONTRACT_URL}@RELEASEPROOF_STABLE_SIDEEFFECT_URL=${STABLE_SIDEEFFECT_URL}@RELEASEPROOF_CANDIDATE_SIDEEFFECT_URL=${CANDIDATE_SIDEEFFECT_URL}@RELEASEPROOF_STABLE_MONEY_URL=${STABLE_MONEY_URL}@RELEASEPROOF_CANDIDATE_MONEY_URL=${CANDIDATE_MONEY_URL}" \
   --cpu 2 --memory 1Gi \
   --timeout 300 \
   --min-instances 1 \
@@ -103,12 +106,13 @@ API_URL="$(url_of releaseproof-api)"
 #    at container start.
 # ---------------------------------------------------------------------------
 echo "==> Deploying UI"
+# No build arguments: the UI resolves everything it needs at runtime from
+# BACKEND_ORIGIN and the API's /api/demo-targets endpoint.
 gcloud run deploy releaseproof-ui \
   --source ./frontend \
   --region "${REGION}" \
   --platform managed \
   --allow-unauthenticated \
-  --set-build-env-vars "^@^VITE_USE_LIVE_TARGETS=true@VITE_STABLE_LATENCY_URL=${STABLE_LATENCY_URL}@VITE_CANDIDATE_LATENCY_URL=${CANDIDATE_LATENCY_URL}@VITE_STABLE_CONTRACT_URL=${STABLE_CONTRACT_URL}@VITE_CANDIDATE_CONTRACT_URL=${CANDIDATE_CONTRACT_URL}@VITE_STABLE_SIDEEFFECT_URL=${STABLE_SIDEEFFECT_URL}@VITE_CANDIDATE_SIDEEFFECT_URL=${CANDIDATE_SIDEEFFECT_URL}@VITE_STABLE_MONEY_URL=${STABLE_MONEY_URL}@VITE_CANDIDATE_MONEY_URL=${CANDIDATE_MONEY_URL}" \
   --set-env-vars "BACKEND_ORIGIN=${API_URL}" \
   --cpu 1 --memory 512Mi \
   --min-instances 1 \
