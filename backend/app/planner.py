@@ -4,7 +4,7 @@ import json
 import os
 import re
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .catalog import ADAPTIVE_IDS, BASELINE_IDS
 from .models import (
@@ -39,14 +39,37 @@ class _PlannedExperimentResponse(BaseModel):
     hypothesis: str = ""
 
 
+# A name/value pair rather than a mapping: Vertex's Schema type rejects the
+# open-ended-object form a dict compiles to, and fails while building the
+# schema, before any request is made. Docstrings are omitted on these response
+# models because pydantic emits them as schema descriptions that the model then
+# has to read.
+class _QueryParameterResponse(BaseModel):
+    name: str = ""
+    value: str = ""
+
+
 class _ExplorerSpecResponse(BaseModel):
     name: str = ""
     rationale: str = ""
     hypothesis: str = ""
-    query_parameters: dict[str, str] = Field(default_factory=dict)
+    query_parameters: list[_QueryParameterResponse] = Field(default_factory=list)
     assertions: list[str] = Field(default_factory=list)
     required_response_paths: list[str] = Field(default_factory=list)
     compare_response_paths: list[str] = Field(default_factory=list)
+
+    @field_validator("query_parameters", mode="before")
+    @classmethod
+    def accept_mapping_form(cls, value: object) -> object:
+        """Accept the mapping form too.
+
+        The schema asks for pairs because Vertex cannot express an open-ended
+        object, but a model that answers with the more natural {"currency":
+        "JPY"} should not lose its whole plan over the shape.
+        """
+        if isinstance(value, dict):
+            return [{"name": str(k), "value": str(v)} for k, v in value.items()]
+        return value
 
 
 class _PlannerResponse(BaseModel):
@@ -104,9 +127,9 @@ def _coerce_explorer_spec(raw: _ExplorerSpecResponse) -> ExplorerExperimentSpec 
         assertions = [ExplorerAssertion.CANDIDATE_SUCCESS, ExplorerAssertion.STATUS_MATCH]
 
     parameters = {
-        str(key)[:80]: str(value)[:500]
-        for key, value in list(raw.query_parameters.items())[:8]
-        if str(key).strip()
+        str(item.name).strip()[:80]: str(item.value)[:500]
+        for item in raw.query_parameters[:8]
+        if str(item.name).strip()
     }
 
     try:

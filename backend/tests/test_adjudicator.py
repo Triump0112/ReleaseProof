@@ -87,6 +87,29 @@ def test_non_deterministic_fields_alone_do_not_block():
     assert result.unexplained_paths == []
 
 
+@pytest.mark.parametrize("field", ["processing_ms", "elapsed_ms", "duration_seconds", "latency_ms"])
+def test_measured_durations_do_not_block(field):
+    """Timing belongs to the latency policy, not to intent reconciliation.
+
+    A concurrency change makes the candidate genuinely slower, and the latency
+    experiment already judges that. Reporting it here as well would fail the
+    smoke baseline on every performance-related change.
+    """
+    concurrency_change = _change(
+        "Increase Cloud Run concurrency from 4 to 32",
+        "- containerConcurrency: 4\n+ containerConcurrency: 32",
+    )
+    result = adjudicate(
+        concurrency_change,
+        {"total": 499.0, field: 31.2},
+        {"total": 499.0, field: 128.7},
+    )
+    assert result.passed is True
+    assert result.unexplained_paths == []
+    labels = {item.path: item.label for item in result.classifications}
+    assert labels[field] == DeltaLabel.BENIGN_NOISE
+
+
 def test_identical_bodies_pass_with_no_classifications():
     body = {"total": 499.0, "currency": "INR"}
     result = adjudicate(GST_CHANGE, body, dict(body))

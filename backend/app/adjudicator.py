@@ -211,7 +211,11 @@ def classify_deltas(change: ChangeInput, deltas: list[ResponseDelta]) -> tuple[l
                 "explained": "The diff or summary directly accounts for this difference.",
                 "benign_noise": (
                     "The field is inherently non-deterministic (identifiers, timestamps, "
-                    "durations) and would differ between two calls to the same revision."
+                    "durations) and would differ between two calls to the same revision. "
+                    "This includes any field reporting measured time — processing_ms, "
+                    "elapsed, duration, latency — even when the two values differ widely. "
+                    "Timing is judged by the latency policy, not here, so reporting it as "
+                    "unexplained duplicates a check that already exists."
                 ),
                 "unexplained": (
                     "A real behavioural difference that nothing in the change accounts for. "
@@ -224,6 +228,9 @@ def classify_deltas(change: ChangeInput, deltas: list[ResponseDelta]) -> tuple[l
                 "If you cannot quote supporting evidence, the label must be 'unexplained'.",
                 "Do not assume a change is safe because it looks reasonable or intentional.",
                 "Judge only what the supplied change text actually says.",
+                "Judge whether the change accounts for the difference, not whether the "
+                "difference is desirable. A slower measured duration is still accounted "
+                "for by a change to concurrency or resource limits.",
             ],
             "change": {
                 "service": change.service_name,
