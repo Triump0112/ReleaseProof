@@ -29,6 +29,9 @@ ZERO_DECIMAL_CURRENCIES = frozenset({"JPY", "KRW", "VND", "CLP", "ISK", "XAF", "
 # actually changes the answer.
 SERVICE_FEE_RATE = 0.075
 
+# Per-request work in the latency scenario, identical on both revisions.
+SERVICE_WORK_SECONDS = 0.05
+
 
 class QuoteRequest(BaseModel):
     """Input shared by every revision and scenario."""
@@ -88,15 +91,19 @@ def create_app(
         total = round(payload.quantity * payload.unit_price, 2)
 
         if configured_scenario == "latency":
+            # Both revisions do identical per-request work, so one request at a
+            # time is indistinguishable between them and the smoke baseline
+            # genuinely passes. The candidate differs only in how many requests
+            # it can serve at once: raising concurrency gave it more work than
+            # its resources can overlap, so requests queue. That contention is
+            # invisible until requests actually overlap, which is the entire
+            # reason a sequential smoke test cannot find this class of bug.
             started = time.perf_counter()
             if configured_role == "candidate":
-                # Each individual request still succeeds. At concurrency > 2,
-                # requests queue and p95 latency rises sharply and repeatably.
                 async with candidate_capacity:
-                    await asyncio.sleep(0.12)
+                    await asyncio.sleep(SERVICE_WORK_SECONDS)
             else:
-                # Stable is non-blocking at the experiment's expected scale.
-                await asyncio.sleep(0.03)
+                await asyncio.sleep(SERVICE_WORK_SECONDS)
             elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
             return {
                 "total": total,

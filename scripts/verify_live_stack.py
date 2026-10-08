@@ -94,6 +94,17 @@ def analyze(payload: dict[str, object], expected_experiment: str) -> None:
     assert selected and selected[0]["experiment_id"] == expected_experiment, selected
     adaptive_evidence = next(item for item in ledger["evidence"] if item["experiment_id"] == expected_experiment)
     assert adaptive_evidence["passed"] is False, adaptive_evidence
+
+    # The adaptive experiment is only interesting if the fixed baseline passed.
+    # If health or smoke also fail, ordinary verification would have caught the
+    # regression and the scenario demonstrates nothing.
+    for baseline in ("health_check", "api_smoke"):
+        evidence = next(item for item in ledger["evidence"] if item["experiment_id"] == baseline)
+        assert evidence["passed"] is True, (
+            f"{baseline} must pass for this scenario to show a baseline blind spot",
+            evidence,
+        )
+
     print(
         f"{expected_experiment}: {ledger['verdict']} - "
         f"{adaptive_evidence['explanation']}"

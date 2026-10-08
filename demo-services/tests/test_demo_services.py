@@ -59,16 +59,43 @@ async def _burst(client: httpx.AsyncClient, requests: int = 12) -> float:
 
 
 @pytest.mark.asyncio
+async def test_candidate_is_indistinguishable_one_request_at_a_time() -> None:
+    """The half of the scenario that makes the other half meaningful.
+
+    Both revisions do identical per-request work, so a sequential smoke test
+    cannot tell them apart. If this ever drifts, the candidate is simply slower
+    everywhere, the smoke baseline fails, and the scenario stops demonstrating
+    that fixed verification misses contention.
+    """
+    async def sequential(client: httpx.AsyncClient) -> float:
+        await client.post("/api/v1/quote", json={"quantity": 1})  # warm up
+        started = time.perf_counter()
+        for _ in range(3):
+            response = await client.post("/api/v1/quote", json={"quantity": 1})
+            assert response.status_code == 200
+        return time.perf_counter() - started
+
+    async with await _client("stable", "latency") as stable:
+        stable_elapsed = await sequential(stable)
+    async with await _client("candidate", "latency") as candidate:
+        candidate_elapsed = await sequential(candidate)
+
+    # Generous bound: the point is "no meaningful difference", not an exact match.
+    assert candidate_elapsed < stable_elapsed * 1.3
+
+
+@pytest.mark.asyncio
 async def test_candidate_has_repeatable_concurrent_latency_regression() -> None:
     async with await _client("stable", "latency") as stable:
         stable_elapsed = await _burst(stable)
     async with await _client("candidate", "latency") as candidate:
         candidate_elapsed = await _burst(candidate)
 
-    # Stable completes one parallel wave (~30 ms); the candidate needs six
-    # semaphore-limited waves (~720 ms). The broad threshold avoids CI jitter.
-    assert candidate_elapsed > stable_elapsed * 5
-    assert candidate_elapsed > 0.60
+    # Stable overlaps all 12 requests in roughly one unit of work; the candidate
+    # serves two at a time and needs six waves. The broad threshold absorbs CI
+    # jitter while still far exceeding the gate's 30% policy.
+    assert candidate_elapsed > stable_elapsed * 3
+    assert candidate_elapsed > 0.20
 
 
 @pytest.mark.asyncio
