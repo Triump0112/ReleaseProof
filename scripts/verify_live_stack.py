@@ -100,6 +100,60 @@ def analyze(payload: dict[str, object], expected_experiment: str) -> None:
     )
 
 
+def analyze_explorer_only_regression(payload: dict[str, object]) -> None:
+    """Prove the two modes genuinely disagree on the same pair of revisions.
+
+    The same change is analysed twice. Guarded mode must find nothing, because
+    every catalog experiment sends the endpoint's default currency and the two
+    revisions really are identical for it. Explorer mode must author a probe
+    that varies the currency and surface the difference as a review finding.
+
+    If guarded mode ever reports a finding here, the scenario has stopped
+    demonstrating anything and the test should fail rather than pass quietly.
+    """
+
+    def run(mode: str) -> dict[str, object]:
+        response = httpx.post(
+            f"http://{HOST}:{API_PORT}/api/analyze",
+            json={**payload, "analysis_mode": mode},
+            timeout=45,
+        )
+        response.raise_for_status()
+        record = response.json()
+        assert record["status"] == "COMPLETE", record
+        return record["ledger"]
+
+    guarded = run("guarded")
+    assert guarded["verdict"] == "PASS", guarded
+    assert guarded["review_findings"] == [], guarded
+    assert not any(
+        item["experiment_id"] == "ai_explorer" for item in guarded["evidence"]
+    ), "guarded mode must not run generated probes"
+    for item in guarded["evidence"]:
+        assert item["passed"] is not False, ("guarded experiment failed unexpectedly", item)
+
+    explorer = run("explorer")
+    probe = next(item for item in explorer["evidence"] if item["experiment_id"] == "ai_explorer")
+    spec = probe["exploratory_spec"]
+
+    # The probe must reach the regression by varying an input no catalog
+    # experiment sends.
+    assert spec["query_parameters"].get("currency"), spec
+    assert probe["passed"] is False, probe
+    assert probe["review_only"] is True and probe["blocking"] is False, probe
+    assert explorer["review_findings"], explorer
+    assert "total" in probe["explanation"], probe
+
+    # A generated finding must never silently become a release decision.
+    assert explorer["verdict"] == "PASS", explorer
+
+    print(
+        f"explorer_only_regression: guarded={guarded['verdict']} with no findings; "
+        f"explorer={explorer['verdict']} with review finding via "
+        f"currency={spec['query_parameters']['currency']}"
+    )
+
+
 def analyze_side_effect(payload: dict[str, object]) -> None:
     """Assert the gate blocks on behaviour the change never declared.
 
@@ -133,7 +187,10 @@ def analyze_side_effect(payload: dict[str, object]) -> None:
     explorer = next(item for item in ledger["evidence"] if item["experiment_id"] == "ai_explorer")
     assert explorer["review_only"] is True, explorer
     assert explorer["blocking"] is False, explorer
-    assert explorer["exploratory_spec"]["name"] == "generated-boundary-probe", explorer
+    # The spec's name is authored per change, so assert the contract it must
+    # satisfy rather than one particular generated name.
+    assert explorer["exploratory_spec"]["name"].startswith("generated-"), explorer
+    assert explorer["exploratory_spec"]["assertions"], explorer
 
     print(f"intent_reconciliation: {ledger['verdict']} - {smoke['explanation']}")
 
@@ -205,6 +262,27 @@ def main() -> None:
                 "candidate_url": f"http://{HOST}:{CANDIDATE_PORT}",
                 "request_path": "/api/v1/quote",
                 "analysis_mode": "explorer",
+            }
+        )
+        for process in side_effect_pair:
+            stop(process)
+            processes.remove(process)
+
+        money_pair = start_pair("money")
+        processes.extend(money_pair)
+        analyze_explorer_only_regression(
+            {
+                "service_name": "pricing-api",
+                "summary": "Centralise money rounding and drop the per-currency decimal table",
+                "diff": (
+                    "-    exponent = CURRENCY_DECIMALS[code]\n"
+                    "-    total = round(charged, exponent)\n"
+                    "+    # one rounding helper for every currency\n"
+                    "+    total = round(charged, 2)"
+                ),
+                "stable_url": f"http://{HOST}:{STABLE_PORT}",
+                "candidate_url": f"http://{HOST}:{CANDIDATE_PORT}",
+                "request_path": "/api/v1/quote",
             }
         )
         print("Live paired-service verification passed.")

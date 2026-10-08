@@ -16,7 +16,7 @@ async def _client(role: str, scenario: str) -> httpx.AsyncClient:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("role", ["stable", "candidate"])
-@pytest.mark.parametrize("scenario", ["latency", "contract", "sideeffect"])
+@pytest.mark.parametrize("scenario", ["latency", "contract", "sideeffect", "money"])
 async def test_all_revisions_pass_health(role: str, scenario: str) -> None:
     async with await _client(role, scenario) as client:
         response = await client.get("/health")
@@ -115,6 +115,56 @@ async def test_side_effect_identifiers_vary_on_every_call() -> None:
 
     assert first["quote_id"] != second["quote_id"]
     assert first["total"] == second["total"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("currency", ["INR", "USD", "EUR"])
+async def test_money_revisions_agree_for_every_two_decimal_currency(currency: str) -> None:
+    """The regression must be unreachable with the inputs the catalog sends."""
+    async with await _client("stable", "money") as stable:
+        stable_body = (await stable.get(f"/api/v1/quote?currency={currency}")).json()
+    async with await _client("candidate", "money") as candidate:
+        candidate_body = (await candidate.get(f"/api/v1/quote?currency={currency}")).json()
+
+    assert stable_body == candidate_body
+
+
+@pytest.mark.asyncio
+async def test_money_revisions_agree_on_the_default_request() -> None:
+    """Smoke, contract and load all send this request; it must look clean."""
+    async with await _client("stable", "money") as stable:
+        stable_body = (await stable.get("/api/v1/quote")).json()
+    async with await _client("candidate", "money") as candidate:
+        candidate_body = (await candidate.get("/api/v1/quote")).json()
+
+    assert stable_body == candidate_body
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("currency", ["JPY", "KRW", "VND"])
+async def test_money_candidate_misrounds_zero_decimal_currencies(currency: str) -> None:
+    """Only a zero-decimal currency separates the two revisions."""
+    async with await _client("stable", "money") as stable:
+        stable_body = (await stable.get(f"/api/v1/quote?currency={currency}")).json()
+    async with await _client("candidate", "money") as candidate:
+        candidate_body = (await candidate.get(f"/api/v1/quote?currency={currency}")).json()
+
+    # Stable rounds to whole units; the candidate keeps two decimal places.
+    assert stable_body["total"] == round(stable_body["total"])
+    assert candidate_body["total"] != stable_body["total"]
+    # Shape and types are untouched, so no schema check can see this.
+    assert stable_body.keys() == candidate_body.keys()
+
+
+@pytest.mark.asyncio
+async def test_money_regression_is_invisible_to_reserved_probe_parameters() -> None:
+    """The edge and payload probes vary their own parameters, not the currency."""
+    for probe_params in ("releaseproof_edge=-1", "releaseproof_payload=xxxx"):
+        async with await _client("stable", "money") as stable:
+            stable_body = (await stable.get(f"/api/v1/quote?{probe_params}")).json()
+        async with await _client("candidate", "money") as candidate:
+            candidate_body = (await candidate.get(f"/api/v1/quote?{probe_params}")).json()
+        assert stable_body == candidate_body, probe_params
 
 
 def test_rejects_invalid_configuration() -> None:

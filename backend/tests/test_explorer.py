@@ -116,6 +116,48 @@ def test_generated_parameters_cannot_alter_the_target():
     assert not any("Injected" in name for name in request.headers)
 
 
+@pytest.mark.asyncio
+async def test_guarded_mode_finds_nothing_where_explorer_does():
+    """The case that justifies explorer mode existing.
+
+    The candidate misrounds zero-decimal currencies. No catalog experiment
+    varies the currency, so guarded mode compares identical responses and
+    legitimately passes. Explorer authors a probe that asks for JPY and finds
+    the difference — without being able to change the verdict.
+    """
+    from app.executor import execute_plan, determine_verdict
+    from app.models import AnalysisMode, Verdict
+    from app.planner import build_plan
+    from app.scenarios import SCENARIO_PROFILES
+
+    base = SCENARIO_PROFILES["currency-rounding"]["summary"].suggested_change
+
+    async def analyse(mode):
+        change = base.model_copy(update={"analysis_mode": mode})
+        plan = build_plan(change)
+        evidence = await execute_plan(change, plan)
+        verdict, _ = determine_verdict(evidence)
+        return plan, evidence, verdict
+
+    guarded_plan, guarded_evidence, guarded_verdict = await analyse(AnalysisMode.GUARDED)
+    assert guarded_verdict == Verdict.PASS
+    assert guarded_plan.exploratory_experiments == []
+    assert not any(item.experiment_id == ExperimentId.AI_EXPLORER for item in guarded_evidence)
+    assert all(item.passed is not False for item in guarded_evidence)
+
+    explorer_plan, explorer_evidence, explorer_verdict = await analyse(AnalysisMode.EXPLORER)
+    spec = explorer_plan.exploratory_experiments[0]
+    assert spec.query_parameters.get("currency") == "JPY"
+
+    probe = next(item for item in explorer_evidence if item.experiment_id == ExperimentId.AI_EXPLORER)
+    assert probe.passed is False
+    assert "total" in probe.explanation
+    assert probe.review_only is True and probe.blocking is False
+
+    # The generated finding is surfaced for review, never promoted to a verdict.
+    assert explorer_verdict == Verdict.PASS
+
+
 def test_model_cannot_opt_out_of_mandatory_availability_checks():
     spec = ExplorerExperimentSpec(
         name="generated-minimal-probe",

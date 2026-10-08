@@ -67,6 +67,8 @@ deploy_demo releaseproof-stable-contract   stable    contract
 deploy_demo releaseproof-candidate-contract candidate contract
 deploy_demo releaseproof-stable-sideeffect stable    sideeffect
 deploy_demo releaseproof-candidate-sideeffect candidate sideeffect
+deploy_demo releaseproof-stable-money      stable    money
+deploy_demo releaseproof-candidate-money   candidate money
 
 STABLE_LATENCY_URL="$(url_of releaseproof-stable-latency)"
 CANDIDATE_LATENCY_URL="$(url_of releaseproof-candidate-latency)"
@@ -74,6 +76,8 @@ STABLE_CONTRACT_URL="$(url_of releaseproof-stable-contract)"
 CANDIDATE_CONTRACT_URL="$(url_of releaseproof-candidate-contract)"
 STABLE_SIDEEFFECT_URL="$(url_of releaseproof-stable-sideeffect)"
 CANDIDATE_SIDEEFFECT_URL="$(url_of releaseproof-candidate-sideeffect)"
+STABLE_MONEY_URL="$(url_of releaseproof-stable-money)"
+CANDIDATE_MONEY_URL="$(url_of releaseproof-candidate-money)"
 
 # ---------------------------------------------------------------------------
 # 2. Orchestrator. Vertex AI planning is ON here; private targets stay OFF so
@@ -104,7 +108,7 @@ gcloud run deploy releaseproof-ui \
   --region "${REGION}" \
   --platform managed \
   --allow-unauthenticated \
-  --set-build-env-vars "^@^VITE_USE_LIVE_TARGETS=true@VITE_STABLE_LATENCY_URL=${STABLE_LATENCY_URL}@VITE_CANDIDATE_LATENCY_URL=${CANDIDATE_LATENCY_URL}@VITE_STABLE_CONTRACT_URL=${STABLE_CONTRACT_URL}@VITE_CANDIDATE_CONTRACT_URL=${CANDIDATE_CONTRACT_URL}@VITE_STABLE_SIDEEFFECT_URL=${STABLE_SIDEEFFECT_URL}@VITE_CANDIDATE_SIDEEFFECT_URL=${CANDIDATE_SIDEEFFECT_URL}" \
+  --set-build-env-vars "^@^VITE_USE_LIVE_TARGETS=true@VITE_STABLE_LATENCY_URL=${STABLE_LATENCY_URL}@VITE_CANDIDATE_LATENCY_URL=${CANDIDATE_LATENCY_URL}@VITE_STABLE_CONTRACT_URL=${STABLE_CONTRACT_URL}@VITE_CANDIDATE_CONTRACT_URL=${CANDIDATE_CONTRACT_URL}@VITE_STABLE_SIDEEFFECT_URL=${STABLE_SIDEEFFECT_URL}@VITE_CANDIDATE_SIDEEFFECT_URL=${CANDIDATE_SIDEEFFECT_URL}@VITE_STABLE_MONEY_URL=${STABLE_MONEY_URL}@VITE_CANDIDATE_MONEY_URL=${CANDIDATE_MONEY_URL}" \
   --set-env-vars "BACKEND_ORIGIN=${API_URL}" \
   --cpu 1 --memory 512Mi \
   --min-instances 1 \
@@ -137,6 +141,8 @@ ReleaseProof is deployed.
     candidate/contract    ${CANDIDATE_CONTRACT_URL}
     stable/sideeffect     ${STABLE_SIDEEFFECT_URL}
     candidate/sideeffect  ${CANDIDATE_SIDEEFFECT_URL}
+    stable/money          ${STABLE_MONEY_URL}
+    candidate/money       ${CANDIDATE_MONEY_URL}
 
 Verify the live stack end to end:
     ./scripts/smoke_deployed.sh ${API_URL} ${STABLE_LATENCY_URL} ${CANDIDATE_LATENCY_URL}

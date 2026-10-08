@@ -25,6 +25,10 @@ services:
         condition: service_healthy
       candidate-sideeffect:
         condition: service_healthy
+      stable-money:
+        condition: service_healthy
+      candidate-money:
+        condition: service_healthy
 
   frontend:
     build:
@@ -94,6 +98,24 @@ services:
       SCENARIO: sideeffect
     ports:
       - "8302:8080"
+    healthcheck: *demo-health
+
+  stable-money:
+    build: ./demo-services
+    environment:
+      ROLE: stable
+      SCENARIO: money
+    ports:
+      - "8401:8080"
+    healthcheck: *demo-health
+
+  candidate-money:
+    build: ./demo-services
+    environment:
+      ROLE: candidate
+      SCENARIO: money
+    ports:
+      - "8402:8080"
     healthcheck: *demo-health
 
 volumes:

@@ -16,31 +16,66 @@ from .models import (
 
 
 def _fallback_explorer_specs(change: ChangeInput) -> list[ExplorerExperimentSpec]:
+    """Offline stand-in for Gemini's probe authoring.
+
+    This is a keyword heuristic, not reasoning: it recognises a few domain
+    signatures and emits the matching probe. Gemini infers the interesting
+    input from the diff itself. The fallback exists so the gate keeps working
+    without Vertex, and the UI labels which one produced the spec.
+    """
     if change.analysis_mode != AnalysisMode.EXPLORER or not change.budget.max_exploratory_experiments:
         return []
     text = f"{change.summary}\n{change.diff}".lower()
-    query_parameters = {"releaseproof_explorer": "boundary"}
-    hypothesis = "A boundary-flavoured request may reveal behaviour that the normal smoke request does not exercise."
-    compare_paths: list[str] = []
-    assertions = [
+
+    baseline_assertions = [
         ExplorerAssertion.CANDIDATE_SUCCESS,
         ExplorerAssertion.STATUS_MATCH,
         ExplorerAssertion.RESPONSE_SHAPE_MATCH,
         ExplorerAssertion.RESPONSE_TYPES_MATCH,
         ExplorerAssertion.LATENCY_WITHIN_POLICY,
     ]
+
+    # Money handling that mentions rounding or decimal places is only wrong for
+    # currencies without a minor unit. No catalog experiment varies `currency`,
+    # so the default-currency request every fixed probe sends cannot reach it.
+    money_signature = ("round", "decimal", "minor unit", "minor_unit", "exponent", "money", "currency")
+    if any(word in text for word in money_signature):
+        return [
+            ExplorerExperimentSpec(
+                name="generated-zero-decimal-currency-probe",
+                rationale=(
+                    "Rounding behaviour was changed, and every catalog experiment sends the default "
+                    "currency. A zero-decimal currency is the input that separates the two revisions."
+                ),
+                hypothesis=(
+                    "If the candidate assumes two decimal places, a zero-decimal currency such as JPY "
+                    "will produce a different total from the stable revision."
+                ),
+                query_parameters={"currency": "JPY"},
+                assertions=[*baseline_assertions, ExplorerAssertion.COMPARE_PATHS],
+                compare_response_paths=["total", "currency"],
+            )
+        ][: change.budget.max_exploratory_experiments]
+
     if any(word in text for word in ("total", "amount", "tax", "discount", "price")):
-        compare_paths = ["currency"]
-        assertions.append(ExplorerAssertion.COMPARE_PATHS)
-        hypothesis = "A generated boundary probe may expose an undeclared pricing or response invariant change."
+        return [
+            ExplorerExperimentSpec(
+                name="generated-pricing-invariant-probe",
+                rationale="The guarded catalog cannot anticipate every input interaction, so Explorer adds a constrained differential probe.",
+                hypothesis="A generated boundary probe may expose an undeclared pricing or response invariant change.",
+                query_parameters={"releaseproof_explorer": "boundary"},
+                assertions=[*baseline_assertions, ExplorerAssertion.COMPARE_PATHS],
+                compare_response_paths=["currency"],
+            )
+        ][: change.budget.max_exploratory_experiments]
+
     return [
         ExplorerExperimentSpec(
             name="generated-boundary-probe",
             rationale="The guarded catalog cannot anticipate every input interaction, so Explorer adds a constrained differential probe.",
-            hypothesis=hypothesis,
-            query_parameters=query_parameters,
-            assertions=assertions,
-            compare_response_paths=compare_paths,
+            hypothesis="A boundary-flavoured request may reveal behaviour that the normal smoke request does not exercise.",
+            query_parameters={"releaseproof_explorer": "boundary"},
+            assertions=baseline_assertions,
         )
     ][: change.budget.max_exploratory_experiments]
 
@@ -163,6 +198,16 @@ def build_plan(change: ChangeInput) -> ExperimentPlan:
                 "Explorer probes are GET-only against the supplied request path; you may provide query parameters only.",
                 "Use only the fixed assertion operators in the schema. Never produce source code, shell commands, URLs, headers, or credentials.",
                 "Explorer findings require review and never decide the release verdict.",
+                # The catalog probes all send the endpoint's default inputs, so a
+                # probe that repeats them is wasted. Value comes only from an
+                # input the fixed experiments never try.
+                "An explorer probe is only worth running if it sends an input the fixed catalog never sends. "
+                "The catalog issues the endpoint's default request and varies only its own reserved parameter "
+                "names, so repeating the default request adds nothing.",
+                "Read the diff for the input dimension whose behaviour it changed, then choose the specific value "
+                "in that dimension most likely to separate the two revisions — a boundary case, an unusual but "
+                "valid enum member, or a value where the old and new logic must disagree.",
+                "Put the paths whose values should be identical across revisions in compare_response_paths.",
                 "Return only JSON matching the response schema.",
             ],
             "change": change.model_dump(mode="json"),

@@ -3,7 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from .models import Budget, ChangeInput, ExpectedContract, ScenarioSummary
+from .models import AnalysisMode, Budget, ChangeInput, ExpectedContract, ScenarioSummary
 
 
 SCENARIO_PROFILES: dict[str, dict[str, Any]] = {
@@ -139,6 +139,84 @@ SCENARIO_PROFILES: dict[str, dict[str, Any]] = {
                 "candidate": {
                     "status": 200, "latencies": [69, 72, 71], "errors": 0,
                     "body": {"total": 500.5, "currency": "INR", "tax_rate": 0.18, "discount_applied": 0.15},
+                },
+            },
+        },
+    },
+    "currency-rounding": {
+        "summary": ScenarioSummary(
+            id="currency-rounding",
+            title="Only a generated input finds it",
+            description=(
+                "The candidate rounds every currency to two decimal places. Every catalog experiment "
+                "sends the default currency and sees two identical responses, so guarded mode passes. "
+                "Only a probe that asks for a zero-decimal currency separates the revisions."
+            ),
+            suggested_change=ChangeInput(
+                service_name="pricing-api",
+                summary="Centralise money rounding and drop the per-currency decimal table",
+                diff=(
+                    "-    exponent = CURRENCY_DECIMALS[code]\n"
+                    "-    total = round(charged, exponent)\n"
+                    "+    # one rounding helper for every currency\n"
+                    "+    total = round(charged, 2)"
+                ),
+                scenario_id="currency-rounding",
+                request_path="/api/v1/quote",
+                analysis_mode=AnalysisMode.EXPLORER,
+                budget=Budget(),
+            ),
+        ),
+        "results": {
+            "health_check": {
+                "stable": {"status": 200, "latencies": [37, 39, 38], "errors": 0, "body": {"status": "ok"}},
+                "candidate": {"status": 200, "latencies": [38, 40, 39], "errors": 0, "body": {"status": "ok"}},
+            },
+            # Every fixed experiment sends the endpoint's default currency, so
+            # stable and candidate agree exactly. This is what makes guarded
+            # mode pass: the evidence genuinely shows no difference.
+            "api_smoke": {
+                "stable": {
+                    "status": 200, "latencies": [66, 69, 68], "errors": 0,
+                    "body": {"total": 536.42, "currency": "INR", "fee_rate": 0.075},
+                },
+                "candidate": {
+                    "status": 200, "latencies": [67, 70, 69], "errors": 0,
+                    "body": {"total": 536.42, "currency": "INR", "fee_rate": 0.075},
+                },
+            },
+            "contract_compatibility": {
+                "stable": {
+                    "status": 200, "latencies": [66, 69, 68], "errors": 0,
+                    "body": {"total": 536.42, "currency": "INR", "fee_rate": 0.075},
+                },
+                "candidate": {
+                    "status": 200, "latencies": [67, 70, 69], "errors": 0,
+                    "body": {"total": 536.42, "currency": "INR", "fee_rate": 0.075},
+                },
+            },
+            "edge_inputs": {
+                # The edge probe varies its own reserved parameter, never the
+                # currency, so it also compares INR against INR.
+                "stable": {
+                    "status": 200, "latencies": [70, 73, 72], "errors": 0,
+                    "body": {"total": 536.42, "currency": "INR", "fee_rate": 0.075},
+                },
+                "candidate": {
+                    "status": 200, "latencies": [71, 74, 73], "errors": 0,
+                    "body": {"total": 536.42, "currency": "INR", "fee_rate": 0.075},
+                },
+            },
+            # The generated probe asks for JPY, which has no minor unit. The
+            # stable revision rounds to whole yen; the candidate does not.
+            "ai_explorer": {
+                "stable": {
+                    "status": 200, "latencies": [67, 70, 69], "errors": 0,
+                    "body": {"total": 536.0, "currency": "JPY", "fee_rate": 0.075},
+                },
+                "candidate": {
+                    "status": 200, "latencies": [68, 71, 70], "errors": 0,
+                    "body": {"total": 536.42, "currency": "JPY", "fee_rate": 0.075},
                 },
             },
         },

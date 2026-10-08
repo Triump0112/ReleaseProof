@@ -18,7 +18,16 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 Role = Literal["stable", "candidate"]
-Scenario = Literal["latency", "contract", "sideeffect"]
+Scenario = Literal["latency", "contract", "sideeffect", "money"]
+
+# ISO 4217 currencies with no minor unit. Amounts in these are whole numbers,
+# so rounding to two decimal places is wrong rather than merely redundant.
+ZERO_DECIMAL_CURRENCIES = frozenset({"JPY", "KRW", "VND", "CLP", "ISK", "XAF", "XOF"})
+
+# A fixed service fee, present on both revisions. Its only purpose is to make
+# the pre-rounding total fractional, so that the currency's decimal exponent
+# actually changes the answer.
+SERVICE_FEE_RATE = 0.075
 
 
 class QuoteRequest(BaseModel):
@@ -53,7 +62,7 @@ def create_app(
     configured_scenario: Scenario = _validated_setting(
         "SCENARIO",
         scenario or os.getenv("SCENARIO", "latency"),
-        {"latency", "contract", "sideeffect"},
+        {"latency", "contract", "sideeffect", "money"},
     )  # type: ignore[assignment]
 
     application = FastAPI(
@@ -131,6 +140,30 @@ def create_app(
                 # A naive differ flags these; the adjudicator must not.
                 "quote_id": uuid4().hex,
                 "issued_at": datetime.now(timezone.utc).isoformat(),
+            }
+
+        if configured_scenario == "money":
+            # Declared change: drop the currency table and round money in one
+            # place. The candidate hardcodes two decimal places, which is right
+            # for INR, USD and EUR — and wrong for every zero-decimal currency.
+            #
+            # Nothing in the fixed catalog varies `currency`: smoke, contract
+            # and load all send the default, and the edge-input and payload
+            # probes vary their own reserved parameter names. So every catalog
+            # experiment compares INR against INR and sees two identical
+            # responses. The regression is only reachable by a probe that
+            # thinks to ask for a different currency.
+            await asyncio.sleep(0.01)
+            code = payload.currency.upper()
+            charged = total * (1 + SERVICE_FEE_RATE)
+            if configured_role == "candidate":
+                decimals = 2
+            else:
+                decimals = 0 if code in ZERO_DECIMAL_CURRENCIES else 2
+            return {
+                "total": round(charged, decimals),
+                "currency": code,
+                "fee_rate": SERVICE_FEE_RATE,
             }
 
         # The setting validator makes this unreachable, but keeping an explicit

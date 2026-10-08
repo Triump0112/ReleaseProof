@@ -120,6 +120,47 @@ const scenarios = {
       { time: '00:13', title: 'Release blocked', detail: 'Fixed policy: unexplained behavioural change blocks. Gemini classified; it did not decide.', tone: 'danger' },
     ],
   },
+  currency: {
+    id: 'currency',
+    eyebrow: 'Only a generated input finds it',
+    title: 'Rounding centralised',
+    summary: 'Candidate rounds every currency to two decimals. Correct for INR. Wrong for JPY.',
+    file: 'src/money.py',
+    additions: '+2',
+    removals: '−2',
+    stable: { name: 'pricing-api-00088', tag: 'stable', commit: 'c7e1a40', traffic: '100%' },
+    candidate: { name: 'pricing-api-00089', tag: 'candidate', commit: '31bd9f6', traffic: '0%' },
+    hypothesis:
+      'Every catalog experiment sends the default currency, so the fixed suite compares INR against INR and sees nothing.',
+    experiment: 'AI-authored zero-decimal currency probe',
+    experimentKey: 'ai_explorer',
+    apiPayload: {
+      service_name: 'pricing-api',
+      summary: 'Centralise money rounding and drop the per-currency decimal table',
+      diff:
+        '-    exponent = CURRENCY_DECIMALS[code]\n-    total = round(charged, exponent)\n+    # one rounding helper for every currency\n+    total = round(charged, 2)',
+      scenario_id: 'currency-rounding',
+      request_path: '/api/v1/quote',
+    },
+    budget: '6 generated requests · 20 seconds',
+    threshold: 'Generated findings are recorded for review and never set the verdict',
+    smokeMiss:
+      'Smoke, contract and load all send the default currency, and the edge and payload probes vary their own reserved parameters. No fixed experiment ever asks for a different currency.',
+    verdict: 'PASS',
+    confidence: 88,
+    metrics: [
+      { label: 'Guarded mode', stable: '3 experiments', candidate: 'all passed', delta: 'No finding', bad: false },
+      { label: 'Default currency', stable: '536.42', candidate: '536.42', delta: 'Identical', bad: false },
+      { label: 'Generated JPY probe', stable: '536', candidate: '536.42', delta: 'Differs', bad: true },
+    ],
+    evidence: [
+      { time: '00:00', title: 'Guarded mode found nothing', detail: 'Health, smoke and contract all compared identical responses.', tone: 'neutral' },
+      { time: '00:05', title: 'Gemini read the rounding change', detail: 'Identified currency as the input dimension the diff actually affects.', tone: 'ai' },
+      { time: '00:09', title: 'Probe authored as data, not code', detail: 'currency=JPY with a compare-paths assertion on total, inside the fixed DSL.', tone: 'ai' },
+      { time: '00:14', title: 'Difference surfaced for review', detail: 'Stable rounded to 536 whole yen; candidate returned 536.42.', tone: 'danger' },
+      { time: '00:16', title: 'Verdict unchanged', detail: 'Generated findings are review-only and cannot block a release.', tone: 'neutral' },
+    ],
+  },
 };
 
 const liveTargetsEnabled = import.meta.env.VITE_USE_LIVE_TARGETS === 'true';
@@ -137,6 +178,10 @@ const TARGET_URLS = {
   sideeffect: {
     stable: import.meta.env.VITE_STABLE_SIDEEFFECT_URL || 'http://stable-sideeffect:8080',
     candidate: import.meta.env.VITE_CANDIDATE_SIDEEFFECT_URL || 'http://candidate-sideeffect:8080',
+  },
+  currency: {
+    stable: import.meta.env.VITE_STABLE_MONEY_URL || 'http://stable-money:8080',
+    candidate: import.meta.env.VITE_CANDIDATE_MONEY_URL || 'http://candidate-money:8080',
   },
 };
 
