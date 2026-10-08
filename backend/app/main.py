@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,9 +19,16 @@ app = FastAPI(
     version="0.1.0",
     description="Evidence-locked, pre-traffic differential release verification for Cloud Run.",
 )
+# The deployed UI proxies /api/ same-origin, so CORS is only needed for local
+# development and any explicitly allowlisted hosted origin.
+_extra_origins = [
+    origin.strip()
+    for origin in os.getenv("RELEASEPROOF_ALLOWED_ORIGINS", "").split(",")
+    if origin.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173"],
+    allow_origins=["http://localhost:3000", "http://localhost:5173", *_extra_origins],
     allow_credentials=False,
     allow_methods=["GET", "POST"],
     allow_headers=["Content-Type"],

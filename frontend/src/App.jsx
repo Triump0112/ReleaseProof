@@ -84,6 +84,14 @@ const scenarios = {
 
 const liveTargetsEnabled = import.meta.env.VITE_USE_LIVE_TARGETS === 'true';
 
+// Compose uses service hostnames; Cloud Run injects public revision URLs at build time.
+const TARGET_URLS = {
+  stableLatency: import.meta.env.VITE_STABLE_LATENCY_URL || 'http://stable-latency:8080',
+  candidateLatency: import.meta.env.VITE_CANDIDATE_LATENCY_URL || 'http://candidate-latency:8080',
+  stableContract: import.meta.env.VITE_STABLE_CONTRACT_URL || 'http://stable-contract:8080',
+  candidateContract: import.meta.env.VITE_CANDIDATE_CONTRACT_URL || 'http://candidate-contract:8080',
+};
+
 function analysisPayload(scenario) {
   if (!liveTargetsEnabled) return scenario.apiPayload;
   const contract = scenario.id === 'contract';
@@ -91,8 +99,8 @@ function analysisPayload(scenario) {
     ...scenario.apiPayload,
     scenario_id: undefined,
     request_path: '/api/v1/quote',
-    stable_url: contract ? 'http://stable-contract:8080' : 'http://stable-latency:8080',
-    candidate_url: contract ? 'http://candidate-contract:8080' : 'http://candidate-latency:8080',
+    stable_url: contract ? TARGET_URLS.stableContract : TARGET_URLS.stableLatency,
+    candidate_url: contract ? TARGET_URLS.candidateContract : TARGET_URLS.candidateLatency,
   };
 }
 

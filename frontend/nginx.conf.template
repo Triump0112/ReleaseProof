@@ -1,0 +1,23 @@
+server {
+  listen ${RP_PORT};
+  server_name _;
+  root /usr/share/nginx/html;
+  index index.html;
+
+  location / {
+    try_files $uri $uri/ /index.html;
+  }
+
+  # Same-origin API proxy. Compose resolves "backend:8080"; Cloud Run injects the
+  # orchestrator's public URL so the browser never makes a cross-origin call.
+  location /api/ {
+    proxy_pass ${RP_BACKEND_ORIGIN};
+    proxy_http_version 1.1;
+    proxy_set_header Host ${RP_BACKEND_HOST};
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_ssl_server_name on;
+    # Paired probes run inside the request; allow the full 90s execution budget.
+    proxy_read_timeout 120s;
+  }
+}
