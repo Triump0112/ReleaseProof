@@ -118,6 +118,17 @@ def _coerce_explorer_spec(raw: _ExplorerSpecResponse) -> ExplorerExperimentSpec 
         assertions.remove(ExplorerAssertion.REQUIRED_PATHS_PRESENT)
     if ExplorerAssertion.COMPARE_PATHS in assertions and not compare:
         assertions.remove(ExplorerAssertion.COMPARE_PATHS)
+
+    # Naming a response path expresses interest in it, and in a differential
+    # probe that interest is almost always "do the revisions agree here?"
+    # rather than "does the field exist?". Observed in practice: a probe that
+    # correctly chose a zero-decimal currency then asserted only that `total`
+    # was present, so it reached the regression without reporting it.
+    # Comparing is strictly more informative, uses an operator already in the
+    # fixed set, and cannot block a release — so a false positive costs a
+    # warning while the alternative costs a missed regression.
+    if required and not compare:
+        compare = list(required)
     if compare and ExplorerAssertion.COMPARE_PATHS not in assertions:
         assertions.append(ExplorerAssertion.COMPARE_PATHS)
 
@@ -373,7 +384,10 @@ def build_plan(change: ChangeInput) -> ExperimentPlan:
                 "Read the diff for the input dimension whose behaviour it changed, then choose the specific value "
                 "in that dimension most likely to separate the two revisions — a boundary case, an unusual but "
                 "valid enum member, or a value where the old and new logic must disagree.",
-                "Put the paths whose values should be identical across revisions in compare_response_paths.",
+                "compare_response_paths is the one that finds regressions: it reports when stable and "
+                "candidate return different VALUES at a path. required_response_paths only checks that a "
+                "field exists. A probe that reaches a behavioural difference but only asserts presence "
+                "will report nothing, so put the paths you actually care about in compare_response_paths.",
                 "Return only JSON matching the response schema.",
             ],
             "change": change.model_dump(mode="json"),

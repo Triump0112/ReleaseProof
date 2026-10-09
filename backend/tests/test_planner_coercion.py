@@ -71,6 +71,45 @@ def test_cross_field_rules_are_satisfied_rather_than_rejected():
     assert ExplorerAssertion.REQUIRED_PATHS_PRESENT not in plan.exploratory_experiments[0].assertions
 
 
+def test_named_paths_are_compared_not_merely_checked_for_presence():
+    """Taken verbatim from a real deployed response.
+
+    Gemini correctly chose a zero-decimal currency, then listed the fields it
+    cared about under required_response_paths. The probe reached the regression
+    and reported nothing, because presence was all it asserted.
+    """
+    plan = _plan({
+        "detected_change": "rounding centralised",
+        "risk_summary": "zero-decimal currencies may be mishandled",
+        "exploratory_experiments": [{
+            "name": "jpy_rounding_check",
+            "rationale": "JPY has no minor unit",
+            "hypothesis": "total will differ for JPY",
+            "query_parameters": {"amount": "123.456", "currency": "JPY"},
+            "assertions": ["candidate_success", "status_match"],
+            "required_response_paths": ["$.total", "$.currency"],
+            "compare_response_paths": [],
+        }],
+    })
+    spec = plan.exploratory_experiments[0]
+    assert ExplorerAssertion.COMPARE_PATHS in spec.assertions
+    assert spec.compare_response_paths == ["$.total", "$.currency"]
+
+
+def test_explicit_compare_paths_are_left_alone():
+    """The fallback only fills a gap; it never overrides a stated choice."""
+    plan = _plan({
+        "detected_change": "x", "risk_summary": "y",
+        "exploratory_experiments": [{
+            "name": "probe", "rationale": "r", "hypothesis": "h",
+            "assertions": ["compare_paths"],
+            "required_response_paths": ["$.id"],
+            "compare_response_paths": ["$.total"],
+        }],
+    })
+    assert plan.exploratory_experiments[0].compare_response_paths == ["$.total"]
+
+
 @pytest.mark.parametrize("operator", ["exec_shell", "run_code", "fetch_url", ""])
 def test_repair_drops_invented_operators_and_never_invents_one(operator):
     """Leniency must not become a way to smuggle capability into the DSL."""

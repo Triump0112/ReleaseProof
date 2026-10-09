@@ -1,0 +1,71 @@
+name: release gate
+
+# Demonstrates ReleaseProof gating a pipeline against the deployed demo
+# revisions. Pick a scenario and watch the job pass or fail on measured
+# evidence rather than on a test someone remembered to write.
+#
+# In a real repository this would run on a deploy workflow, after a candidate
+# revision exists and before traffic is shifted to it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: 'Which seeded candidate to verify'
+        required: true
+        default: 'undeclared-side-effect'
+        type: choice
+        options:
+          - undeclared-side-effect   # expected: BLOCK
+          - concurrency-regression   # expected: BLOCK
+          - currency-rounding        # expected: PASS, with a generated-probe finding
+      mode:
+        description: 'guarded selects from the catalog; explorer also authors a probe'
+        required: true
+        default: 'explorer'
+        type: choice
+        options: [guarded, explorer]
+
+env:
+  API_URL: https://releaseproof-api-owsl25a4sa-el.a.run.app
+
+jobs:
+  verify-candidate:
+    name: 'verify ${{ inputs.scenario }} (${{ inputs.mode }})'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the gate reads the diff to decide what to investigate
+
+      - name: Resolve the revision pair for this scenario
+        id: pair
+        run: |
+          case "${{ inputs.scenario }}" in
+            undeclared-side-effect)
+              echo "stable=https://releaseproof-stable-sideeffect-owsl25a4sa-el.a.run.app" >> "$GITHUB_OUTPUT"
+              echo "candidate=https://releaseproof-candidate-sideeffect-owsl25a4sa-el.a.run.app" >> "$GITHUB_OUTPUT"
+              echo "summary=Apply 18% GST to the quote total" >> "$GITHUB_OUTPUT"
+              ;;
+            concurrency-regression)
+              echo "stable=https://releaseproof-stable-latency-owsl25a4sa-el.a.run.app" >> "$GITHUB_OUTPUT"
+              echo "candidate=https://releaseproof-candidate-latency-owsl25a4sa-el.a.run.app" >> "$GITHUB_OUTPUT"
+              echo "summary=Increase Cloud Run concurrency from 4 to 32" >> "$GITHUB_OUTPUT"
+              ;;
+            currency-rounding)
+              echo "stable=https://releaseproof-stable-money-owsl25a4sa-el.a.run.app" >> "$GITHUB_OUTPUT"
+              echo "candidate=https://releaseproof-candidate-money-owsl25a4sa-el.a.run.app" >> "$GITHUB_OUTPUT"
+              echo "summary=Centralise money rounding and drop the per-currency decimal table" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+
+      - name: ReleaseProof gate
+        uses: ./
+        with:
+          api-url: ${{ env.API_URL }}
+          stable-url: ${{ steps.pair.outputs.stable }}
+          candidate-url: ${{ steps.pair.outputs.candidate }}
+          request-path: /api/v1/quote
+          service-name: pricing-api
+          summary: ${{ steps.pair.outputs.summary }}
+          mode: ${{ inputs.mode }}

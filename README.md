@@ -143,6 +143,45 @@ cd frontend && npm install && npm run dev
 
 Without `VITE_USE_LIVE_TARGETS=true` the API serves repeatable fixtures, which is useful for UI work. Compose is the real paired-service path.
 
+## Use it as a release gate in CI
+
+The point of a pre-traffic gate is to sit in the pipeline, between "a candidate
+revision exists" and "traffic is shifted to it". ReleaseProof ships as a GitHub
+Action for exactly that:
+
+```yaml
+- uses: Triump0112/ReleaseProof@main
+  with:
+    api-url:       ${{ vars.RELEASEPROOF_API_URL }}
+    stable-url:    ${{ steps.deploy.outputs.stable_url }}
+    candidate-url: ${{ steps.deploy.outputs.candidate_url }}
+    request-path:  /api/v1/quote
+```
+
+The gate reads the diff from the repository itself, so the investigation is
+specific to the change being released rather than a fixed suite. It fails the
+job on `BLOCK`, and on `INCONCLUSIVE` too — an unknown is not the same as a safe
+release, though `allow-inconclusive` can relax that.
+
+Findings from generated probes surface as **warnings**, never failures,
+because a probe the model invented must not be able to fail someone's build.
+
+The job summary carries the full evidence: every experiment, the reconciliation
+table with each difference and how it was accounted for, and a link to the run
+record.
+
+The underlying script is standard-library only and takes plain arguments, so the
+same gate runs from Cloud Build, GitLab CI, or a shell:
+
+```bash
+python3 ci/releaseproof_gate.py \
+  --api-url "$RELEASEPROOF_API_URL" \
+  --stable-url "$STABLE_URL" --candidate-url "$CANDIDATE_URL" \
+  --request-path /api/v1/quote --mode explorer
+```
+
+Exit codes are `0` PASS, `1` BLOCK, `2` INCONCLUSIVE, `3` the gate could not run.
+
 ## API
 
 - `GET  /health` — service health

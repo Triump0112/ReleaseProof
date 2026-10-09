@@ -1,0 +1,88 @@
+name: 'ReleaseProof gate'
+description: >-
+  Compare a zero-traffic candidate revision against the current stable one and
+  fail the job if the change introduces a regression — before any user is exposed.
+author: 'ReleaseProof'
+
+branding:
+  icon: 'shield'
+  color: 'blue'
+
+inputs:
+  api-url:
+    description: 'Deployed ReleaseProof orchestrator URL.'
+    required: true
+  stable-url:
+    description: 'The revision currently serving production traffic.'
+    required: true
+  candidate-url:
+    description: 'The candidate revision, holding zero traffic.'
+    required: true
+  request-path:
+    description: 'Representative request path probed on both revisions.'
+    required: false
+    default: '/'
+  service-name:
+    description: 'Service name recorded in the evidence ledger.'
+    required: false
+    default: ${{ github.event.repository.name }}
+  summary:
+    description: 'Change description. Defaults to the PR title, else the last commit subject.'
+    required: false
+    default: ''
+  diff:
+    description: 'Diff to analyse. Defaults to the diff against the base ref.'
+    required: false
+    default: ''
+  mode:
+    description: >-
+      guarded selects experiments from the allowlisted catalog. explorer also lets
+      the planner author a bounded probe; its findings are advisory and never
+      change the verdict.
+    required: false
+    default: 'guarded'
+  allow-inconclusive:
+    description: >-
+      Pass the job when evidence is insufficient. Off by default, because an
+      unknown is not the same as a safe release.
+    required: false
+    default: 'false'
+  timeout:
+    description: 'Seconds to wait for the analysis.'
+    required: false
+    default: '180'
+
+outputs:
+  verdict:
+    description: 'PASS, BLOCK, or INCONCLUSIVE.'
+    value: ${{ steps.gate.outputs.verdict }}
+
+runs:
+  using: 'composite'
+  steps:
+    - id: gate
+      shell: bash
+      env:
+        RELEASEPROOF_API_URL: ${{ inputs.api-url }}
+        RELEASEPROOF_STABLE_URL: ${{ inputs.stable-url }}
+        RELEASEPROOF_CANDIDATE_URL: ${{ inputs.candidate-url }}
+        RELEASEPROOF_REQUEST_PATH: ${{ inputs.request-path }}
+        RELEASEPROOF_SERVICE_NAME: ${{ inputs.service-name }}
+        RELEASEPROOF_SUMMARY: ${{ inputs.summary || github.event.pull_request.title }}
+        RELEASEPROOF_DIFF: ${{ inputs.diff }}
+        RELEASEPROOF_DIFF_BASE: ${{ github.event.pull_request.base.sha }}
+        RELEASEPROOF_MODE: ${{ inputs.mode }}
+        RELEASEPROOF_TIMEOUT: ${{ inputs.timeout }}
+        RELEASEPROOF_ALLOW_INCONCLUSIVE: ${{ inputs.allow-inconclusive }}
+      run: |
+        set -o pipefail
+        python3 "${GITHUB_ACTION_PATH}/ci/releaseproof_gate.py"
+        status=$?
+        case $status in
+          0) verdict=PASS ;;
+          1) verdict=BLOCK ;;
+          2) verdict=INCONCLUSIVE ;;
+          *) verdict=ERROR ;;
+        esac
+        echo "verdict=${verdict}" >> "$GITHUB_OUTPUT"
+        exit $status
