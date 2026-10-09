@@ -28,16 +28,54 @@ from .scenarios import scenario_results
 
 LATENCY_REGRESSION_LIMIT = 0.30
 ERROR_RATE_INCREASE_LIMIT = 0.02
-LIVE_REQUEST_CAP = 100
+LIVE_REQUEST_CAP = 300
+
+# Below this many timed requests per side, a 95th percentile is dominated by
+# the slowest one or two samples. The delta is still measured and reported, but
+# it is not strong enough evidence to block a release on, so the latency policy
+# stands down rather than blocking on noise.
+MIN_LATENCY_SAMPLES = 20
+
+
+def _requests_per_trial(experiment_id: "ExperimentId") -> int:
+    """Timed requests per trial, purely to size the sample."""
+    return 10 if experiment_id == ExperimentId.LOAD else 7
+
+
+def _probe_concurrency(experiment_id: "ExperimentId") -> int:
+    """How many of those requests are in flight at once.
+
+    Only the load experiment overlaps them, because contention is the thing it
+    measures. Every other experiment stays strictly sequential: collecting more
+    samples must not quietly turn the smoke baseline into a load test, which is
+    what makes it blind to contention in the first place.
+    """
+    return 10 if experiment_id == ExperimentId.LOAD else 1
+
+
 MISSING = object()
 
 
 def _p95(values: list[float]) -> float | None:
+    """Linearly interpolated 95th percentile.
+
+    The previous nearest-rank form returned the maximum for any sample under
+    twenty, so a three-trial run reported its slowest request as a "p95". That
+    is not a percentile, and a release policy should not be stated in terms of
+    one that cannot be computed from the evidence collected.
+    """
     if not values:
         return None
     ordered = sorted(values)
-    index = max(0, math.ceil(0.95 * len(ordered)) - 1)
-    return round(ordered[index], 2)
+    if len(ordered) == 1:
+        return round(ordered[0], 2)
+    position = 0.95 * (len(ordered) - 1)
+    lower = math.floor(position)
+    upper = math.ceil(position)
+    if lower == upper:
+        return round(ordered[lower], 2)
+    weight = position - lower
+    return round(ordered[lower] * (1 - weight) + ordered[upper] * weight, 2)
 
 
 def _json_type(value: Any) -> str:
@@ -81,14 +119,15 @@ def _response_value(body: Any, path: str) -> Any:
 def _side_from_profile(raw: dict[str, Any], warmups: int, trials: int) -> SideMeasurement:
     requests = int(raw.get("requests", trials))
     errors = int(raw.get("errors", 0))
-    latencies = [float(value) for value in raw.get("latencies", [])][:trials]
+    latencies = [float(value) for value in raw.get("latencies", [])]
     return SideMeasurement(
         success=200 <= int(raw.get("status", 0)) < 400 and errors / max(requests, 1) <= ERROR_RATE_INCREASE_LIMIT,
-        trials_completed=min(trials, len(latencies)) if latencies else trials,
+        trials_completed=trials,
         warmups_completed=warmups,
         requests=requests,
         error_rate=round(errors / max(requests, 1), 4),
         p95_latency_ms=_p95(latencies),
+        latency_samples=len(latencies),
         response_status=int(raw.get("status", 0)),
         response_sample=raw.get("body"),
     )
@@ -135,10 +174,17 @@ def _evaluate(
 
     stable_latency = stable.p95_latency_ms
     candidate_latency = candidate.p95_latency_ms
-    if stable_latency and candidate_latency:
+    samples = min(stable.latency_samples, candidate.latency_samples)
+    if stable_latency and candidate_latency and samples >= MIN_LATENCY_SAMPLES:
         regression = (candidate_latency - stable_latency) / stable_latency
         if regression > LATENCY_REGRESSION_LIMIT:
-            return False, f"Candidate p95 latency regressed by {regression:.1%}.", {"max_p95_regression": LATENCY_REGRESSION_LIMIT}
+            return False, (
+                f"Candidate p95 latency regressed by {regression:.1%} "
+                f"over {samples} timed requests per revision."
+            ), {
+                "max_p95_regression": LATENCY_REGRESSION_LIMIT,
+                "latency_samples_per_side": samples,
+            }
 
     stable_errors = stable.error_rate or 0.0
     candidate_errors = candidate.error_rate or 0.0
@@ -206,10 +252,11 @@ def _evaluate_explorer(
     if ExplorerAssertion.LATENCY_WITHIN_POLICY in assertions:
         stable_latency = stable.p95_latency_ms
         candidate_latency = candidate.p95_latency_ms
-        if stable_latency and candidate_latency:
+        samples = min(stable.latency_samples, candidate.latency_samples)
+        if stable_latency and candidate_latency and samples >= MIN_LATENCY_SAMPLES:
             regression = (candidate_latency - stable_latency) / stable_latency
             if regression > LATENCY_REGRESSION_LIMIT:
-                findings.append(f"p95 latency regressed by {regression:.1%}")
+                findings.append(f"p95 latency regressed by {regression:.1%} over {samples} samples")
 
     thresholds: dict[str, float | int | str] = {
         "decision": "review_only",
@@ -244,7 +291,7 @@ async def _live_side(url: str, path: str, experiment_id: ExperimentId, warmups: 
     errors = 0
     response_status: int | None = None
     sample: Any = None
-    requests_per_trial = 10 if experiment_id == ExperimentId.LOAD else 1
+    requests_per_trial = _requests_per_trial(experiment_id)
     request_count = min(trials * requests_per_trial, LIVE_REQUEST_CAP)
 
     async def probe(client: httpx.AsyncClient, index: int) -> tuple[float, int | None, Any, bool]:
@@ -275,8 +322,9 @@ async def _live_side(url: str, path: str, experiment_id: ExperimentId, warmups: 
             except httpx.HTTPError:
                 pass
         completed = 0
+        concurrency = _probe_concurrency(experiment_id)
         while completed < request_count:
-            batch_size = min(requests_per_trial, request_count - completed)
+            batch_size = min(concurrency, request_count - completed)
             results = await asyncio.gather(*(probe(client, completed + offset) for offset in range(batch_size)))
             for latency, status, body, failed in results:
                 latencies.append(latency)
@@ -291,11 +339,12 @@ async def _live_side(url: str, path: str, experiment_id: ExperimentId, warmups: 
         requests=request_count,
         error_rate=round(errors / max(request_count, 1), 4),
         p95_latency_ms=_p95(latencies),
+        latency_samples=len(latencies),
         response_status=response_status,
         response_sample=sample,
         notes=[
             f"Bounded live HTTP probe for {experiment_id.value}; no arbitrary commands executed.",
-            f"Executed {requests_per_trial} request(s) per trial.",
+            f"Executed {request_count} timed request(s), {concurrency} in flight at a time.",
         ],
     )
 
@@ -324,7 +373,7 @@ async def _live_explorer_side(
                 await client.get(target, params=spec.query_parameters, headers=headers)
             except httpx.HTTPError:
                 pass
-        for _ in range(trials):
+        for _ in range(trials * _requests_per_trial(ExperimentId.AI_EXPLORER)):
             started = time.perf_counter()
             try:
                 response = await client.get(target, params=spec.query_parameters, headers=headers)
@@ -343,9 +392,10 @@ async def _live_explorer_side(
         success=errors == 0,
         trials_completed=trials,
         warmups_completed=warmups,
-        requests=trials,
-        error_rate=round(errors / max(trials, 1), 4),
+        requests=len(latencies),
+        error_rate=round(errors / max(len(latencies), 1), 4),
         p95_latency_ms=_p95(latencies),
+        latency_samples=len(latencies),
         response_status=response_status,
         response_sample=sample,
         notes=[
@@ -371,7 +421,7 @@ async def execute_plan(change: ChangeInput, plan: ExperimentPlan) -> list[Experi
                 + change.budget.warmups * 2
             )
         else:
-            requests_per_trial = 10 if experiment_id == ExperimentId.LOAD else 1
+            requests_per_trial = _requests_per_trial(experiment_id)
             estimated = (change.budget.warmups + change.budget.trials * requests_per_trial) * 2
         if total_requests + estimated > change.budget.max_requests:
             inconclusive = SideMeasurement(success=False, trials_completed=0, warmups_completed=0, requests=0, notes=["Request budget exhausted."])
@@ -437,7 +487,7 @@ async def execute_plan(change: ChangeInput, plan: ExperimentPlan) -> list[Experi
 
     explorer_definition = CATALOG[ExperimentId.AI_EXPLORER]
     for spec in plan.exploratory_experiments:
-        estimated = (change.budget.warmups + change.budget.trials) * 2
+        estimated = (change.budget.warmups + change.budget.trials * _requests_per_trial(ExperimentId.AI_EXPLORER)) * 2
         if total_requests + estimated > change.budget.max_requests:
             inconclusive = SideMeasurement(
                 success=False,

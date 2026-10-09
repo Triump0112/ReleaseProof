@@ -152,6 +152,9 @@ class SideMeasurement(BaseModel):
     requests: int = Field(ge=0)
     error_rate: float | None = Field(default=None, ge=0, le=1)
     p95_latency_ms: float | None = Field(default=None, ge=0)
+    # How many timed requests the percentile was computed from. Reported so a
+    # latency claim can be judged against the evidence that supports it.
+    latency_samples: int = Field(default=0, ge=0)
     response_status: int | None = None
     response_sample: dict[str, Any] | list[Any] | str | None = None
     notes: list[str] = Field(default_factory=list)
