@@ -95,7 +95,9 @@ def _slug(name: str) -> str:
     return slug[:80] if len(slug) >= 3 else "generated-probe"
 
 
-def _coerce_explorer_spec(raw: _ExplorerSpecResponse) -> ExplorerExperimentSpec | None:
+def _coerce_explorer_spec(
+    raw: _ExplorerSpecResponse, available_parameters: list[str] | None = None
+) -> ExplorerExperimentSpec | None:
     """Repair a model-authored probe into a spec the runner will accept.
 
     Returns None only when nothing executable survives. Repairs never widen
@@ -143,6 +145,14 @@ def _coerce_explorer_spec(raw: _ExplorerSpecResponse) -> ExplorerExperimentSpec 
         if str(item.name).strip()
     }
 
+    # When the service published its interface, a parameter outside it is one
+    # the service will ignore. Keeping it would leave the probe comparing two
+    # default responses while appearing to have varied something, so drop it
+    # and let the probe be honestly empty instead.
+    if available_parameters:
+        allowed = set(available_parameters)
+        parameters = {name: value for name, value in parameters.items() if name in allowed}
+
     try:
         return ExplorerExperimentSpec(
             name=_slug(raw.name),
@@ -157,7 +167,9 @@ def _coerce_explorer_spec(raw: _ExplorerSpecResponse) -> ExplorerExperimentSpec 
         return None
 
 
-def _coerce_plan(raw: _PlannerResponse, change: ChangeInput) -> ExperimentPlan:
+def _coerce_plan(
+    raw: _PlannerResponse, change: ChangeInput, available_parameters: list[str] | None = None
+) -> ExperimentPlan:
     """Build the real plan from the model's response, dropping what is unusable."""
     adaptive: list[PlannedExperiment] = []
     for item in raw.adaptive_experiments:
@@ -176,7 +188,7 @@ def _coerce_plan(raw: _PlannerResponse, change: ChangeInput) -> ExperimentPlan:
     exploratory: list[ExplorerExperimentSpec] = []
     if change.analysis_mode == AnalysisMode.EXPLORER:
         for item in raw.exploratory_experiments:
-            spec = _coerce_explorer_spec(item)
+            spec = _coerce_explorer_spec(item, available_parameters)
             if spec is not None:
                 exploratory.append(spec)
 
@@ -347,7 +359,7 @@ def _enforce_bounds(plan: ExperimentPlan, change: ChangeInput) -> ExperimentPlan
     return plan
 
 
-def build_plan(change: ChangeInput) -> ExperimentPlan:
+def build_plan(change: ChangeInput, available_parameters: list[str] | None = None) -> ExperimentPlan:
     if os.getenv("RELEASEPROOF_USE_VERTEX", "false").lower() != "true":
         return _fallback_plan(change, "Vertex planner disabled; deterministic local planner used.")
 
@@ -388,9 +400,16 @@ def build_plan(change: ChangeInput) -> ExperimentPlan:
                 "candidate return different VALUES at a path. required_response_paths only checks that a "
                 "field exists. A probe that reaches a behavioural difference but only asserts presence "
                 "will report nothing, so put the paths you actually care about in compare_response_paths.",
+                "Use only parameter names listed in available_query_parameters. Names taken from the "
+                "diff are the service's internal variables and will be ignored by the endpoint. If the "
+                "list is empty, infer names from the request path and change description.",
                 "Return only JSON matching the response schema.",
             ],
             "change": change.model_dump(mode="json"),
+            # The diff names internal variables; these are the names the service
+            # actually accepts. Without them the planner infers parameter names
+            # from the diff and the service silently ignores them.
+            "available_query_parameters": available_parameters or [],
         }
         response = client.models.generate_content(
             model=model,
@@ -402,7 +421,7 @@ def build_plan(change: ChangeInput) -> ExperimentPlan:
             ),
         )
         raw = _PlannerResponse.model_validate_json(response.text)
-        plan = _enforce_bounds(_coerce_plan(raw, change), change)
+        plan = _enforce_bounds(_coerce_plan(raw, change, available_parameters), change)
 
         # A response that parsed but selected nothing is not a usable plan; the
         # fallback at least guarantees a change-relevant experiment runs.

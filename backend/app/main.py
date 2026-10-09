@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .catalog import CATALOG, RISK_TAXONOMY
 from .executor import determine_verdict, execute_plan
+from .interface import discover_query_parameters
 from .ledger import JsonLedgerStore
 from .models import ChangeInput, EvidenceLedger, RunRecord, RunStatus, Verdict, utc_now
 from .planner import build_plan
@@ -90,7 +91,16 @@ async def analyze(change: ChangeInput) -> RunRecord:
     if change.scenario_id and change.scenario_id not in SCENARIO_PROFILES:
         raise HTTPException(status_code=422, detail="Unknown scenario_id")
 
-    plan = build_plan(change)
+    # Ask the stable revision what inputs it accepts before planning. Without
+    # this the planner infers parameter names from the diff, which holds the
+    # service's internal names rather than its API.
+    available_parameters: list[str] = []
+    if change.stable_url:
+        available_parameters = await discover_query_parameters(
+            str(change.stable_url), change.request_path
+        )
+
+    plan = build_plan(change, available_parameters)
     record = RunRecord(
         ledger=EvidenceLedger(run_id="pending", created_at=utc_now(), change=change, plan=plan)
     )
