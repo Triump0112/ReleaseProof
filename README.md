@@ -189,7 +189,14 @@ Exit codes are `0` PASS, `1` BLOCK, `2` INCONCLUSIVE, `3` the gate could not run
 - `GET  /api/risk-classes` — honest coverage map (`implemented`, `partial`, `planned`)
 - `GET  /api/scenarios` — demonstration fixtures
 - `POST /api/analyze` — plan, execute, and decide
-- `GET  /api/runs/{id}` — immutable run record
+- `GET  /api/runs/{id}` — the run record
+
+Evidence is written to Firestore when `RELEASEPROOF_USE_FIRESTORE=true`, so a
+record outlives the container that produced it — a Cloud Run filesystem is
+ephemeral and per instance, and a JSON ledger loses every record on redeploy.
+Writes are mirrored locally and reads fall back to that mirror, so a storage
+outage degrades the archive rather than stopping the gate. `GET /health`
+reports which backend is live.
 
 Health and smoke always execute. Intent reconciliation runs on the smoke baseline, so every release is checked for undeclared behaviour even when the planner selects no adaptive experiment. `analysis_mode` defaults to `guarded`; setting it to `explorer` adds up to two review-only declarative probes within the same request and time budget.
 
@@ -225,7 +232,7 @@ The long-term shape of this is a Cloud Deploy verification task, not a replaceme
 
 ## Prototype boundaries
 
-A hackathon prototype, not a production release controller. The experiment catalog and thresholds are intentionally narrow. The risk-classes endpoint explicitly separates implemented, partial and planned coverage; it is a taxonomy, not a claim that all failures are known. Targets are restricted to HTTP(S), execution is request-bounded, and private targets are disabled unless explicitly enabled for the local Compose network. Explorer is GET-only and review-only. Production use would additionally need a hardened workload sandbox before allowing model-authored source code, authenticated revision discovery, Firestore-backed immutable evidence, Cloud Logging and Monitoring integration, stronger statistical policies, and organization-specific calibration.
+A hackathon prototype, not a production release controller. The experiment catalog and thresholds are intentionally narrow. The risk-classes endpoint explicitly separates implemented, partial and planned coverage; it is a taxonomy, not a claim that all failures are known. Targets are restricted to HTTP(S), execution is request-bounded, and private targets are disabled unless explicitly enabled for the local Compose network. Explorer is GET-only and review-only. Production use would additionally need a hardened workload sandbox before allowing model-authored source code, authenticated revision discovery, append-only evidence with retention guarantees, Cloud Logging and Monitoring integration, stronger statistical policies, and organization-specific calibration.
 
 ## Repository map
 

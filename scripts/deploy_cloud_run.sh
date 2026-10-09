@@ -45,6 +45,7 @@ gcloud services enable \
   cloudbuild.googleapis.com \
   artifactregistry.googleapis.com \
   aiplatform.googleapis.com \
+  firestore.googleapis.com \
   --project "${PROJECT}" >/dev/null
 
 # New projects no longer grant the default compute service account the roles
@@ -55,7 +56,7 @@ PROJECT_NUMBER="$(gcloud projects describe "${PROJECT}" --format='value(projectN
 BUILD_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
 
 echo "==> Granting build and Vertex roles to ${BUILD_SA} (idempotent)"
-for role in roles/cloudbuild.builds.builder roles/aiplatform.user; do
+for role in roles/cloudbuild.builds.builder roles/aiplatform.user roles/datastore.user; do
   gcloud projects add-iam-policy-binding "${PROJECT}" \
     --member="serviceAccount:${BUILD_SA}" \
     --role="${role}" \
@@ -66,6 +67,13 @@ done
 # IAM is eventually consistent; a build started immediately can still be denied.
 echo "==> Waiting for IAM propagation"
 sleep 30
+
+# Evidence outlives the container only if it is stored outside it. Creating the
+# default database is idempotent in effect: an existing one reports an error we
+# deliberately ignore.
+echo "==> Ensuring a Firestore database exists (safe to re-run)"
+gcloud firestore databases create --location="${REGION}" --project "${PROJECT}" --quiet >/dev/null 2>&1 \
+  || echo "    (database already exists, or the region already has one)"
 
 # ---------------------------------------------------------------------------
 # 1. Demo revisions. Public so the orchestrator can probe them over HTTPS;
@@ -121,7 +129,7 @@ gcloud run deploy releaseproof-api \
   --region "${REGION}" \
   --platform managed \
   --allow-unauthenticated \
-  --set-env-vars "^@^RELEASEPROOF_USE_VERTEX=true@GOOGLE_CLOUD_PROJECT=${PROJECT}@GOOGLE_CLOUD_LOCATION=${VERTEX_LOCATION}@RELEASEPROOF_GEMINI_MODEL=${GEMINI_MODEL}@RELEASEPROOF_ALLOW_PRIVATE_TARGETS=false@RELEASEPROOF_STABLE_LATENCY_URL=${STABLE_LATENCY_URL}@RELEASEPROOF_CANDIDATE_LATENCY_URL=${CANDIDATE_LATENCY_URL}@RELEASEPROOF_STABLE_CONTRACT_URL=${STABLE_CONTRACT_URL}@RELEASEPROOF_CANDIDATE_CONTRACT_URL=${CANDIDATE_CONTRACT_URL}@RELEASEPROOF_STABLE_SIDEEFFECT_URL=${STABLE_SIDEEFFECT_URL}@RELEASEPROOF_CANDIDATE_SIDEEFFECT_URL=${CANDIDATE_SIDEEFFECT_URL}@RELEASEPROOF_STABLE_MONEY_URL=${STABLE_MONEY_URL}@RELEASEPROOF_CANDIDATE_MONEY_URL=${CANDIDATE_MONEY_URL}" \
+  --set-env-vars "^@^RELEASEPROOF_USE_VERTEX=true@GOOGLE_CLOUD_PROJECT=${PROJECT}@GOOGLE_CLOUD_LOCATION=${VERTEX_LOCATION}@RELEASEPROOF_GEMINI_MODEL=${GEMINI_MODEL}@RELEASEPROOF_ALLOW_PRIVATE_TARGETS=false@RELEASEPROOF_USE_FIRESTORE=true@RELEASEPROOF_STABLE_LATENCY_URL=${STABLE_LATENCY_URL}@RELEASEPROOF_CANDIDATE_LATENCY_URL=${CANDIDATE_LATENCY_URL}@RELEASEPROOF_STABLE_CONTRACT_URL=${STABLE_CONTRACT_URL}@RELEASEPROOF_CANDIDATE_CONTRACT_URL=${CANDIDATE_CONTRACT_URL}@RELEASEPROOF_STABLE_SIDEEFFECT_URL=${STABLE_SIDEEFFECT_URL}@RELEASEPROOF_CANDIDATE_SIDEEFFECT_URL=${CANDIDATE_SIDEEFFECT_URL}@RELEASEPROOF_STABLE_MONEY_URL=${STABLE_MONEY_URL}@RELEASEPROOF_CANDIDATE_MONEY_URL=${CANDIDATE_MONEY_URL}" \
   --cpu 2 --memory 1Gi \
   --timeout 300 \
   --min-instances "${MIN_INSTANCES}" \

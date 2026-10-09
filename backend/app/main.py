@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .catalog import CATALOG, RISK_TAXONOMY
 from .executor import determine_verdict, execute_plan
 from .interface import discover_query_parameters
-from .ledger import JsonLedgerStore
+from .ledger import build_ledger_store
 from .models import ChangeInput, EvidenceLedger, RunRecord, RunStatus, Verdict, utc_now
 from .planner import build_plan
 from .scenarios import SCENARIO_PROFILES, scenario_summaries
@@ -34,12 +34,17 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["Content-Type"],
 )
-store = JsonLedgerStore()
+store = build_ledger_store()
 
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "service": "releaseproof-api"}
+    return {
+        "status": "ok",
+        "service": "releaseproof-api",
+        # Durable evidence is a claim this system makes, so make it checkable.
+        "ledger": getattr(store, "backend", "unknown"),
+    }
 
 
 @app.get("/api/catalog")
